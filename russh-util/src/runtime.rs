@@ -30,7 +30,7 @@ macro_rules! spawn_impl {
 #[cfg(not(target_arch = "wasm32"))]
 macro_rules! spawn_impl {
     ($fn:expr) => {
-        tokio::spawn($fn)
+        tokio::task::spawn_local($fn)
     };
 }
 
