@@ -329,7 +329,9 @@ impl Encrypted {
                     PublicKeyOrCertificate::Certificate(ref cert) => {
                         // Validate certificate expiration
                         let now = SystemTime::now();
-                        if now < cert.valid_after_time() || now > cert.valid_before_time() {
+                        if cert.valid_after_time().is_some_and(|t| now < t)
+                            || cert.valid_before_time().is_some_and(|t| now > t)
+                        {
                             warn!("Certificate is expired or not yet valid");
                             reject_auth_request(until, &mut self.write, auth_request).await?;
                             return Ok(());

@@ -61,8 +61,8 @@ use std::io::Read;
 use std::path::Path;
 use std::string::FromUtf8Error;
 
-use aes::cipher::block_padding::UnpadError;
-use aes::cipher::inout::PadError;
+use block_padding::Error as UnpadError;
+use inout::PadError;
 use data_encoding::BASE64_MIME;
 use thiserror::Error;
 
@@ -158,9 +158,6 @@ pub enum Error {
     Pkcs1(#[from] pkcs1::Error),
     #[error("Pkcs8: {0}")]
     Pkcs8(#[from] ::pkcs8::Error),
-    #[cfg(feature = "rsa")]
-    #[error("Pkcs8: {0}")]
-    Pkcs8Next(#[from] ::rsa::pkcs8::Error),
     #[error("Sec1: {0}")]
     Sec1(#[from] sec1::Error),
 

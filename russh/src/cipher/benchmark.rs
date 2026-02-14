@@ -1,9 +1,9 @@
 #![allow(clippy::unwrap_used)]
 use criterion::*;
-use rand::TryRngCore;
+use rand::TryRng;
 
 pub fn bench(c: &mut Criterion) {
-    let mut rand_generator = black_box(rand::rngs::OsRng {});
+    let mut rand_generator = black_box(rand::rngs::SysRng);
 
     let mut packet_length = black_box(vec![0u8; 4]);
 

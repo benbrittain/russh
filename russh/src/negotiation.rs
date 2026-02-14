@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 
 use log::debug;
-use rand::RngCore;
+use rand::Rng;
 use ssh_encoding::{Decode, Encode};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
 

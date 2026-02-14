@@ -98,7 +98,7 @@ impl KexAlgorithmImplementor for Curve25519Kex {
         client_ephemeral.extend(&client_pubkey.0);
 
         msg::KEX_ECDH_INIT.encode(writer)?;
-        client_pubkey.0.encode(writer)?;
+        client_pubkey.0[..].encode(writer)?;
 
         self.local_secret = Some(client_secret);
         Ok(())

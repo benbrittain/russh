@@ -90,7 +90,7 @@ impl KexAlgorithmImplementor for MlKem768X25519Kex {
         c_pk1.0.copy_from_slice(c_pk1_bytes);
 
         let mut randomness = [0u8; SHARED_SECRET_SIZE];
-        getrandom::getrandom(&mut randomness).map_err(|_| Error::KexInit)?;
+        getrandom::fill(&mut randomness).map_err(|_| Error::KexInit)?;
 
         let (s_ct2, k_pq_shared_secret) = encapsulate(&c_pk2, randomness);
 
@@ -115,7 +115,7 @@ impl KexAlgorithmImplementor for MlKem768X25519Kex {
         writer: &mut impl Writer,
     ) -> Result<(), Error> {
         let mut randomness = [0u8; KEY_GENERATION_SEED_SIZE];
-        getrandom::getrandom(&mut randomness).map_err(|_| Error::KexInit)?;
+        getrandom::fill(&mut randomness).map_err(|_| Error::KexInit)?;
 
         let keypair = generate_key_pair(randomness);
         let (mlkem_sk, mlkem_pk) = keypair.into_parts();

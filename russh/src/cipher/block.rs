@@ -15,22 +15,17 @@ use std::convert::TryInto;
 use std::marker::PhantomData;
 
 use aes::cipher::{IvSizeUser, KeyIvInit, KeySizeUser, StreamCipher};
-#[allow(deprecated)]
-use digest::generic_array::GenericArray as GenericArray_0_14;
-use rand::RngCore;
+use rand::Rng;
 
 use super::super::Error;
 use super::PACKET_LENGTH_LEN;
 use crate::keys::key::safe_rng;
 use crate::mac::{Mac, MacAlgorithm};
 
-// Allow deprecated generic-array 0.14 usage until RustCrypto crates (cipher, digest, etc.)
-// upgrade to generic-array 1.x. Remove this when dependencies no longer use 0.14.
-#[allow(deprecated)]
 fn new_cipher_from_slices<C: KeyIvInit>(k: &[u8], n: &[u8]) -> C {
     C::new(
-        GenericArray_0_14::from_slice(k),
-        GenericArray_0_14::from_slice(n),
+        k.try_into().expect("key length mismatch"),
+        n.try_into().expect("nonce length mismatch"),
     )
 }
 
