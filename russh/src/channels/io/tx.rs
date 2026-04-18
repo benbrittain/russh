@@ -167,6 +167,25 @@ where
         Poll::Ready((msg, writable))
     }
 
+    // Zero-copy variant: splits an owned `Bytes` via refcount bump instead of
+    // `Bytes::copy_from_slice`. The caller's `data` is truncated in place to
+    // reflect what was consumed.
+    fn poll_mk_msg_bytes(
+        &mut self,
+        cx: &mut Context<'_>,
+        data: &mut Bytes,
+    ) -> Poll<(ChannelMsg, NonZeroUsize)> {
+        let writable = ready!(self.poll_writable(cx, data.len()));
+        let chunk = data.split_to(writable.into());
+
+        let msg = match self.ext {
+            None => ChannelMsg::Data { data: chunk },
+            Some(ext) => ChannelMsg::ExtendedData { data: chunk, ext },
+        };
+
+        Poll::Ready((msg, writable))
+    }
+
     fn activate(&mut self, msg: ChannelMsg, writable: usize) -> &mut OwnedPermitFuture<S> {
         use futures::TryFutureExt;
         self.send_fut.insert(Box::pin(
@@ -189,6 +208,70 @@ where
             }
             Err(SendError(())) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "channel closed")),
         }
+    }
+
+    // Zero-copy variant of `poll_write`. Drives a single send-one-chunk cycle
+    // for an owned `Bytes`: builds the `ChannelMsg`, reserves the mpsc permit,
+    // hands off. Returns the number of bytes consumed from `data`.
+    fn poll_send_bytes_chunk(
+        &mut self,
+        cx: &mut Context<'_>,
+        data: &mut Bytes,
+    ) -> Poll<Result<usize, io::Error>> {
+        let send_fut = if let Some(x) = self.send_fut.as_mut() {
+            x
+        } else {
+            let (msg, writable) = ready!(self.poll_mk_msg_bytes(cx, data));
+            self.activate(msg, writable.into())
+        };
+        let poll_result = send_fut.as_mut().poll_unpin(cx);
+        match poll_result {
+            Poll::Pending => {
+                if self.mpsc_blocked_since.is_none() {
+                    self.mpsc_blocked_since = Some(std::time::Instant::now());
+                    let id = self.id;
+                    let capacity = self.sender.capacity();
+                    self.channel_span.in_scope(|| {
+                        tracing::info!(
+                            target: "russh::backpressure",
+                            event = "ssh.channel.mpsc_blocked",
+                            channel_id = ?id,
+                            capacity,
+                            "channel send blocked waiting for session loop to drain"
+                        );
+                    });
+                }
+                Poll::Pending
+            }
+            Poll::Ready(r) => {
+                if let Some(since) = self.mpsc_blocked_since.take() {
+                    let id = self.id;
+                    let blocked_us = since.elapsed().as_micros() as u64;
+                    self.channel_span.in_scope(|| {
+                        tracing::info!(
+                            target: "russh::backpressure",
+                            event = "ssh.channel.mpsc_unblocked",
+                            channel_id = ?id,
+                            blocked_us,
+                            "channel send permit acquired"
+                        );
+                    });
+                }
+                Poll::Ready(self.handle_write_result(r))
+            }
+        }
+    }
+
+    // Send an owned `Bytes` payload, chunked by the peer's `max_packet_size`
+    // and remote window. The payload is moved into `ChannelMsg::Data` via
+    // `Bytes::split_to` (refcount bump — no memcpy). Routes through the same
+    // shared window-size counter as `poll_write`, so concurrent writers on
+    // the same channel see consistent backpressure.
+    pub(crate) async fn send_bytes(&mut self, mut data: Bytes) -> Result<(), io::Error> {
+        while !data.is_empty() {
+            futures::future::poll_fn(|cx| self.poll_send_bytes_chunk(cx, &mut data)).await?;
+        }
+        Ok(())
     }
 }
 

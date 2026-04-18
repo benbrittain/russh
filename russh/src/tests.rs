@@ -639,6 +639,201 @@ mod channels {
         )
         .await;
     }
+
+    /// `data_bytes` must chunk a single `Bytes` that exceeds both the remote
+    /// window and `max_packet_size`, and the receiver must reassemble the
+    /// payload byte-for-byte.
+    #[tokio::test]
+    async fn test_data_bytes_chunked() {
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            channel: Option<tokio::sync::oneshot::Sender<Channel<server::Msg>>>,
+        }
+
+        impl ServerHandle {
+            fn get_channel_waiter(
+                &mut self,
+            ) -> tokio::sync::oneshot::Receiver<Channel<server::Msg>> {
+                let (tx, rx) = tokio::sync::oneshot::channel::<Channel<server::Msg>>();
+                self.channel = Some(tx);
+                rx
+            }
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+
+            async fn channel_open_session(
+                &mut self,
+                channel: Channel<server::Msg>,
+                _session: &mut server::Session,
+            ) -> Result<bool, Self::Error> {
+                if let Some(a) = self.channel.take() {
+                    a.send(channel).unwrap();
+                }
+                Ok(true)
+            }
+        }
+
+        // 1 MiB payload with a recognizable per-byte pattern, comfortably
+        // larger than any default max_packet_size + window combination.
+        const N: usize = 1024 * 1024;
+        let payload: Vec<u8> = (0..N).map(|i| (i % 251) as u8).collect();
+        let expected = payload.clone();
+
+        let mut sh = ServerHandle { channel: None };
+        let scw = sh.get_channel_waiter();
+
+        test_session(
+            Client {},
+            sh,
+            |client| async move {
+                let ch = client.channel_open_session().await.unwrap();
+                ch.data_bytes(bytes::Bytes::from(payload)).await.unwrap();
+                client
+            },
+            |server| async move {
+                let mut channel = scw.await.unwrap();
+                let mut acc = Vec::with_capacity(N);
+                while acc.len() < N {
+                    match channel.wait().await.unwrap() {
+                        ChannelMsg::Data { data } => acc.extend_from_slice(&data),
+                        ChannelMsg::Eof | ChannelMsg::Close => break,
+                        _ => {}
+                    }
+                }
+                assert_eq!(acc.len(), N);
+                assert_eq!(acc, expected);
+                server
+            },
+        )
+        .await;
+    }
+
+    /// `data_bytes` shares the window-size counter with writers minted from
+    /// `make_writer`. Running both concurrently must deliver every byte
+    /// without deadlock or over-commit on the remote window.
+    #[tokio::test]
+    async fn test_data_bytes_concurrent_with_writer() {
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            channel: Option<tokio::sync::oneshot::Sender<Channel<server::Msg>>>,
+        }
+
+        impl ServerHandle {
+            fn get_channel_waiter(
+                &mut self,
+            ) -> tokio::sync::oneshot::Receiver<Channel<server::Msg>> {
+                let (tx, rx) = tokio::sync::oneshot::channel::<Channel<server::Msg>>();
+                self.channel = Some(tx);
+                rx
+            }
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+
+            async fn channel_open_session(
+                &mut self,
+                channel: Channel<server::Msg>,
+                _session: &mut server::Session,
+            ) -> Result<bool, Self::Error> {
+                if let Some(a) = self.channel.take() {
+                    a.send(channel).unwrap();
+                }
+                Ok(true)
+            }
+        }
+
+        let mut sh = ServerHandle { channel: None };
+        let scw = sh.get_channel_waiter();
+
+        test_session(
+            Client {},
+            sh,
+            |client| async move {
+                let ch = client.channel_open_session().await.unwrap();
+
+                // make_writer clones the mpsc sender + shared window handle
+                // into an owned ChannelTx, so it has no lifetime tied to ch.
+                // That lets us drive both writers concurrently against the
+                // same shared Arc<Mutex<u32>> window counter without moving
+                // ch between tasks.
+                let mut writer = ch.make_writer();
+                let bytes_buf = bytes::Bytes::from(vec![1u8; 1024 * 64]);
+                let writer_buf = [2u8; 1024 * 64];
+
+                let data_bytes_fut = ch.data_bytes(bytes_buf);
+                let writer_fut = async {
+                    tokio::io::AsyncWriteExt::write_all(&mut writer, &writer_buf)
+                        .await
+                        .unwrap();
+                };
+
+                let (bytes_res, ()) = tokio::join!(data_bytes_fut, writer_fut);
+                bytes_res.unwrap();
+
+                client
+            },
+            |server| async move {
+                let mut channel = scw.await.unwrap();
+                let mut total = 0usize;
+                let target = 2 * 1024 * 64;
+                while total < target {
+                    match channel.wait().await.unwrap() {
+                        ChannelMsg::Data { data } => total += data.len(),
+                        ChannelMsg::Eof | ChannelMsg::Close => break,
+                        _ => {}
+                    }
+                }
+                assert_eq!(total, target);
+                server
+            },
+        )
+        .await;
+    }
 }
 
 mod gex {

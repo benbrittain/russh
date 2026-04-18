@@ -352,6 +352,41 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
         Ok(())
     }
 
+    /// Send an owned [`Bytes`] payload to the channel without reallocation.
+    ///
+    /// Unlike [`data`](Self::data) — which reads from an `AsyncRead` and thus
+    /// must copy bytes into an internal buffer — this moves the caller's
+    /// `Bytes` through to `ChannelMsg::Data` via refcount-bump slicing. The
+    /// payload is chunked internally against the peer's `max_packet_size`
+    /// and remote window, so the caller can pass arbitrarily large `Bytes`.
+    ///
+    /// Uses the same shared window-size counter as [`make_writer`](Self::make_writer),
+    /// so mixing `data_bytes` with writers minted from `make_writer` on the
+    /// same channel is safe.
+    pub async fn data_bytes(&self, data: Bytes) -> Result<(), Error> {
+        self.send_data_bytes(None, data).await
+    }
+
+    /// Like [`data_bytes`](Self::data_bytes), but sends the payload as
+    /// `ChannelMsg::ExtendedData` with the given `ext` type code.
+    pub async fn extended_data_bytes(&self, ext: u32, data: Bytes) -> Result<(), Error> {
+        self.send_data_bytes(Some(ext), data).await
+    }
+
+    async fn send_data_bytes(&self, ext: Option<u32>, data: Bytes) -> Result<(), Error> {
+        let mut tx = io::ChannelTx::new(
+            self.sender.clone(),
+            self.id,
+            self.window_size.value.clone(),
+            self.window_size.subscribe(),
+            self.max_packet_size,
+            ext,
+            self.channel_span.clone(),
+        );
+        tx.send_bytes(data).await.map_err(|_| Error::SendError)?;
+        Ok(())
+    }
+
     pub async fn eof(&self) -> Result<(), Error> {
         self.send_msg(ChannelMsg::Eof).await
     }
@@ -597,6 +632,16 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
         data: R,
     ) -> Result<(), Error> {
         self.write_half.extended_data(ext, data).await
+    }
+
+    /// See [`ChannelWriteHalf::data_bytes`].
+    pub async fn data_bytes(&self, data: Bytes) -> Result<(), Error> {
+        self.write_half.data_bytes(data).await
+    }
+
+    /// See [`ChannelWriteHalf::extended_data_bytes`].
+    pub async fn extended_data_bytes(&self, ext: u32, data: Bytes) -> Result<(), Error> {
+        self.write_half.extended_data_bytes(ext, data).await
     }
 
     pub async fn eof(&self) -> Result<(), Error> {
