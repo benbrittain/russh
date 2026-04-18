@@ -16,7 +16,7 @@ thiserror.workspace = true
 futures.workspace = true
 rand.workspace = true
 byteorder.workspace = true
-log.workspace = true
+tracing.workspace = true
 tokio = { workspace = true }
 bytes.workspace = true
 delegate.workspace = true

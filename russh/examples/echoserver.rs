@@ -9,8 +9,12 @@ use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
         .init();
 
     let config = russh::server::Config {

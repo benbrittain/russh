@@ -112,6 +112,21 @@ pub enum ChannelType {
     },
 }
 
+impl ChannelType {
+    pub(crate) fn as_channel_open_type_str(&self) -> &str {
+        match self {
+            ChannelType::Session => "session",
+            ChannelType::X11 { .. } => "x11",
+            ChannelType::DirectTcpip(_) => "direct-tcpip",
+            ChannelType::DirectStreamLocal(_) => "direct-streamlocal@openssh.com",
+            ChannelType::ForwardedTcpIp(_) => "forwarded-tcpip",
+            ChannelType::ForwardedStreamLocal(_) => "forwarded-streamlocal@openssh.com",
+            ChannelType::AgentForward => "auth-agent@openssh.com",
+            ChannelType::Unknown { typ } => typ.as_str(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TcpChannelInfo {
     pub host_to_connect: String,

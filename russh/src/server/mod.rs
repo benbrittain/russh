@@ -38,7 +38,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use client::GexParams;
 use futures::future::Future;
-use log::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use msg::{is_kex_msg, validate_client_msg_strict_kex};
 use russh_util::runtime::JoinHandle;
 use russh_util::time::Instant;
@@ -855,8 +855,9 @@ pub trait Server {
         let fut = async move {
             if config.maximum_packet_size > 65535 {
                 error!(
-                    "Maximum packet size ({:?}) should not larger than a TCP packet (65535)",
-                    config.maximum_packet_size
+                    event = "ssh.config.invalid",
+                    ssh.config.maximum_packet_size = config.maximum_packet_size,
+                    "maximum_packet_size exceeds 65535 TCP limit"
                 );
             }
 
@@ -865,7 +866,7 @@ pub trait Server {
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
-                        debug!("Server shutdown requested");
+                        info!(event = "ssh.server.shutdown", "shutdown requested");
                         return Ok(());
                     },
                     accept_result = socket.accept() => {
@@ -885,10 +886,16 @@ pub trait Server {
                                         }
                                     }
 
-                                    let session = match run_stream(config, socket, handler).await {
+                                    let session = match run_stream_inner(
+                                        config,
+                                        socket,
+                                        Some(peer_addr),
+                                        handler,
+                                    )
+                                    .await
+                                    {
                                         Ok(s) => s,
                                         Err(e) => {
-                                            debug!("Connection setup failed");
                                             let _ = error_tx.send(e);
                                             return
                                         }
@@ -898,20 +905,15 @@ pub trait Server {
 
                                     tokio::select! {
                                         reason = shutdown_rx.recv() => {
-                                            if handle.disconnect(
+                                            let _ = handle.disconnect(
                                                 Disconnect::ByApplication,
                                                 reason.unwrap_or_else(|_| "".into()),
                                                 "".into()
-                                            ).await.is_err() {
-                                                debug!("Failed to send disconnect message");
-                                            }
+                                            ).await;
                                         },
                                         result = session => {
                                             if let Err(e) = result {
-                                                debug!("Connection closed with error");
                                                 let _ = error_tx.send(e);
-                                            } else {
-                                                debug!("Connection closed");
                                             }
                                         }
                                     }
@@ -996,7 +998,20 @@ impl<H: Handler> Future for RunningSession<H> {
 /// Start a single connection in the background.
 pub async fn run_stream<H, R>(
     config: Arc<Config>,
+    stream: R,
+    handler: H,
+) -> Result<RunningSession<H>, H::Error>
+where
+    H: Handler + Send + 'static,
+    R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    run_stream_inner(config, stream, None, handler).await
+}
+
+async fn run_stream_inner<H, R>(
+    config: Arc<Config>,
     mut stream: R,
+    peer_addr: Option<std::net::SocketAddr>,
     handler: H,
 ) -> Result<RunningSession<H>, H::Error>
 where
@@ -1016,7 +1031,8 @@ where
         channel_buffer_size: config.channel_buffer_size,
     };
 
-    let common = read_ssh_id(config, &mut stream).await?;
+    let mut common = read_ssh_id(config, &mut stream).await?;
+    common.peer_addr = peer_addr;
     let mut session = Session {
         target_window_size: common.config.window_size,
         common,
@@ -1062,6 +1078,12 @@ async fn read_ssh_id<R: AsyncRead + Unpin>(
         alive_timeouts: 0,
         received_data: false,
         remote_sshid: sshid.into(),
+        bytes_sent: 0,
+        bytes_received: 0,
+        close_reason: None,
+        session_span: tracing::Span::none(),
+        auth_span: None,
+        peer_addr: None,
     };
     Ok(session)
 }
@@ -1072,11 +1094,6 @@ async fn reply<H: Handler + Send>(
     pkt: &mut IncomingSshPacket,
 ) -> Result<(), H::Error> {
     if let Some(message_type) = pkt.buffer.first() {
-        debug!(
-            "< msg type {message_type:?}, seqn {:?}, len {}",
-            pkt.seqn.0,
-            pkt.buffer.len()
-        );
         if session.common.strict_kex && session.common.encrypted.is_none() {
             let seqno = pkt.seqn.0 - 1; // was incremented after read()
             validate_client_msg_strict_kex(*message_type, seqno as usize)?;
@@ -1089,7 +1106,11 @@ async fn reply<H: Handler + Send>(
 
     if pkt.buffer.first() == Some(&msg::KEXINIT) && session.kex == SessionKexState::Idle {
         // Not currently in a rekey but received KEXINIT
-        info!("Client has initiated re-key");
+        info!(
+            event = "ssh.kex.peer_initiated",
+            role = "server",
+            "peer initiated key exchange"
+        );
         session.begin_rekey()?;
         // Kex will consume the packet right away
     }
@@ -1104,15 +1125,12 @@ async fn reply<H: Handler + Send>(
 
             match progress {
                 KexProgress::NeedsReply { kex, reset_seqn } => {
-                    debug!("kex impl continues: {kex:?}");
                     session.kex = SessionKexState::InProgress(kex);
                     if reset_seqn {
-                        debug!("kex impl requests seqno reset");
                         session.common.reset_seqn();
                     }
                 }
                 KexProgress::Done { newkeys, .. } => {
-                    debug!("kex impl has completed");
                     session.common.strict_kex =
                         session.common.strict_kex || newkeys.names.strict_kex();
 
@@ -1149,8 +1167,6 @@ async fn reply<H: Handler + Send>(
                     if session.common.strict_kex {
                         pkt.seqn = Wrapping(0);
                     }
-
-                    debug!("kex done");
                 }
             }
 

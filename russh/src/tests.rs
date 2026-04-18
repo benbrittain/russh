@@ -9,7 +9,7 @@ mod compress {
     use std::sync::{Arc, Mutex};
 
     use keys::PrivateKeyWithHashAlg;
-    use log::debug;
+    use tracing::debug;
     use ssh_key::PrivateKey;
 
     use super::server::{Server as _, Session};
@@ -18,7 +18,7 @@ mod compress {
 
     #[tokio::test]
     async fn compress_local_test() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
         let mut config = server::Config::default();
@@ -162,7 +162,7 @@ mod channels {
 
         use crate::*;
 
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
         let mut config = server::Config::default();
@@ -671,7 +671,7 @@ mod server_kex_junk {
 
     #[tokio::test]
     async fn server_kex_junk_test() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let config = server::Config::default();
         let config = Arc::new(config);
@@ -780,7 +780,7 @@ mod future_certificate {
 
     #[tokio::test]
     async fn test_future_certificate_auth_full_flow() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         // 1. Spawn ssh-agent
         let (mut agent, agent_path, dir) = spawn_agent().await;

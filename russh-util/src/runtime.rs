@@ -2,6 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use tracing::Instrument;
+
 #[derive(Debug)]
 pub struct JoinError;
 
@@ -39,11 +41,15 @@ where
     F: Future<Output = T> + 'static + Send,
     T: Send + 'static,
 {
+    let span = tracing::Span::current();
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    spawn_impl!(async {
-        let result = future.await;
-        let _ = sender.send(result);
-    });
+    spawn_impl!(
+        async {
+            let result = future.await;
+            let _ = sender.send(result);
+        }
+        .instrument(span)
+    );
     JoinHandle { handle: receiver }
 }
 

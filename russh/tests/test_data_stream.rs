@@ -94,7 +94,11 @@ async fn test_channel_halves() -> Result<(), anyhow::Error> {
 
 async fn run_test(test: impl ChannelDataCopy) -> Result<(), anyhow::Error> {
     static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(env_logger::init);
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .init();
+    });
 
     let addr = addr();
     let data = data();

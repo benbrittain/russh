@@ -14,7 +14,8 @@
 //
 use std::borrow::Cow;
 
-use log::debug;
+use tracing::field::Empty;
+use tracing::{info, info_span};
 use rand_core::Rng;
 use ssh_encoding::{Decode, Encode};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
@@ -210,6 +211,21 @@ pub(crate) trait Select {
         available_host_keys: Option<&[PrivateKey]>,
         cause: &KexCause,
     ) -> Result<Names, Error> {
+        let span = info_span!(
+            "ssh.algorithm_negotiation",
+            role = if Self::is_server() { "server" } else { "client" },
+            ssh.kex.algorithm = Empty,
+            ssh.cipher = Empty,
+            ssh.mac.client_to_server = Empty,
+            ssh.mac.server_to_client = Empty,
+            ssh.compression.client_to_server = Empty,
+            ssh.compression.server_to_client = Empty,
+            ssh.hostkey.algorithm = Empty,
+            ssh.strict_kex = Empty,
+            ssh.kex.cause = ?cause,
+        );
+        let _enter = span.enter();
+
         let &Some(mut r) = &buffer.get(17..) else {
             return Err(Error::Inconsistent);
         };
@@ -257,9 +273,7 @@ pub(crate) trait Select {
         )
         .is_ok();
 
-        if strict_kex_requested && strict_kex_provided {
-            debug!("strict kex enabled")
-        }
+        let strict_kex_enabled = strict_kex_requested && strict_kex_provided;
 
         // Host key
 
@@ -343,7 +357,7 @@ pub(crate) trait Select {
         String::decode(&mut r)?; // languages server-to-client
 
         let follows = u8::decode(&mut r)? != 0;
-        Ok(Names {
+        let names = Names {
             kex: kex_algorithm,
             key: key_algorithm,
             cipher,
@@ -353,8 +367,32 @@ pub(crate) trait Select {
             server_compression,
             // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
             ignore_guessed: follows && !(kex_both_first && key_both_first),
-            strict_kex: (strict_kex_requested && strict_kex_provided) || cause.is_strict_rekey(),
-        })
+            strict_kex: strict_kex_enabled || cause.is_strict_rekey(),
+        };
+
+        span.record("ssh.kex.algorithm", names.kex.as_ref())
+            .record("ssh.cipher", names.cipher.as_ref())
+            .record("ssh.mac.client_to_server", names.client_mac.as_ref())
+            .record("ssh.mac.server_to_client", names.server_mac.as_ref())
+            .record(
+                "ssh.compression.client_to_server",
+                names.client_compression.name(),
+            )
+            .record(
+                "ssh.compression.server_to_client",
+                names.server_compression.name(),
+            )
+            .record("ssh.hostkey.algorithm", names.key.to_string().as_str())
+            .record("ssh.strict_kex", names.strict_kex);
+        info!(
+            event = "ssh.algorithm_negotiation.completed",
+            ssh.kex.algorithm = names.kex.as_ref(),
+            ssh.cipher = names.cipher.as_ref(),
+            ssh.hostkey.algorithm = %names.key,
+            ssh.strict_kex = names.strict_kex,
+            "algorithms negotiated"
+        );
+        Ok(names)
     }
 }
 

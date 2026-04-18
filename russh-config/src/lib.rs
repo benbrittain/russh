@@ -9,8 +9,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use globset::Glob;
-use log::debug;
 use thiserror::*;
+use tracing::debug;
 
 #[derive(Debug, Error)]
 /// anyhow::Errors.
