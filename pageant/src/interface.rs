@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
-use log::debug;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::debug;
 
 use crate::Error;
 #[cfg(all(windows, feature = "namedpipes"))]

@@ -2,7 +2,7 @@ use core::str;
 
 use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
-use log::{debug, error};
+use tracing::{error, instrument};
 use ssh_encoding::{Decode, Encode, Reader};
 use ssh_key::{Algorithm, Certificate, HashAlg, PrivateKey, PublicKey, Signature};
 use tokio;
@@ -255,6 +255,12 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     }
 
     /// Ask the agent for a list of identities, including certificates.
+    #[instrument(
+        level = "debug",
+        name = "ssh.agent.request",
+        skip_all,
+        fields(otel.kind = "client", ssh.agent.op = "list")
+    )]
     pub async fn request_identities(&mut self) -> Result<Vec<AgentIdentity>, Error> {
         self.buf.clear();
         self.buf.resize(4, 0);
@@ -263,7 +269,6 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         BigEndian::write_u32(&mut self.buf[..], len as u32);
 
         self.read_response().await?;
-        debug!("identities: {:?}", &self.buf[..]);
         let mut identities = Vec::new();
 
         #[allow(clippy::indexing_slicing)] // static length
@@ -316,6 +321,12 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     }
 
     /// Ask the agent to sign the supplied piece of data.
+    #[instrument(
+        level = "debug",
+        name = "ssh.agent.request",
+        skip_all,
+        fields(otel.kind = "client", ssh.agent.op = "sign")
+    )]
     pub async fn sign_request(
         &mut self,
         identity: &AgentIdentity,
@@ -336,7 +347,6 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         hash_alg: Option<HashAlg>,
         mut data: Vec<u8>,
     ) -> Result<Vec<u8>, Error> {
-        debug!("sign_request: {data:?}");
         let hash = self.prepare_sign_request(public, hash_alg, &data)?;
 
         self.read_response().await?;
@@ -347,10 +357,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
                 Ok(data)
             }
             Some((&msg::FAILURE, _)) => Err(Error::AgentFailure),
-            _ => {
-                debug!("self.buf = {:?}", &self.buf[..]);
-                Err(Error::AgentProtocolError)
-            }
+            _ => Err(Error::AgentProtocolError),
         }
     }
 
@@ -366,8 +373,6 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         hash_alg: Option<HashAlg>,
         mut data: Vec<u8>,
     ) -> Result<Vec<u8>, Error> {
-        debug!("sign_request_cert: {data:?}");
-
         self.buf.clear();
         self.buf.resize(4, 0);
         msg::SIGN_REQUEST.encode(&mut self.buf)?;
@@ -397,10 +402,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
                 Ok(data)
             }
             Some((&msg::FAILURE, _)) => Err(Error::AgentFailure),
-            _ => {
-                debug!("self.buf = {:?}", &self.buf[..]);
-                Err(Error::AgentProtocolError)
-            }
+            _ => Err(Error::AgentProtocolError),
         }
     }
 
@@ -415,7 +417,6 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         msg::SIGN_REQUEST.encode(&mut self.buf)?;
         public.key_data().encoded()?.encode(&mut self.buf)?;
         data.encode(&mut self.buf)?;
-        debug!("public = {public:?}");
 
         let hash = match public.algorithm() {
             Algorithm::Rsa { .. } => match hash_alg {
@@ -459,7 +460,6 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         hash_alg: Option<HashAlg>,
         data: &[u8],
     ) -> impl futures::Future<Output = (Self, Result<String, Error>)> {
-        debug!("sign_request: {data:?}");
         let r = self.prepare_sign_request(public, hash_alg, data);
         async move {
             if let Err(e) = r {
@@ -482,14 +482,18 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     }
 
     /// Ask the agent to sign the supplied piece of data, and return a `Signature`.
+    #[instrument(
+        level = "debug",
+        name = "ssh.agent.request",
+        skip_all,
+        fields(otel.kind = "client", ssh.agent.op = "sign_signature")
+    )]
     pub async fn sign_request_signature(
         &mut self,
         public: &ssh_key::PublicKey,
         hash_alg: Option<HashAlg>,
         data: &[u8],
     ) -> Result<Signature, Error> {
-        debug!("sign_request: {data:?}");
-
         self.prepare_sign_request(public, hash_alg, data)?;
         self.read_response().await?;
 

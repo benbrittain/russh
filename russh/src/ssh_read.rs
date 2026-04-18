@@ -1,7 +1,8 @@
 use std::pin::Pin;
 
 use futures::task::*;
-use log::trace;
+use tracing::field::Empty;
+use tracing::{info, instrument, trace, Span};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::Error;
@@ -113,9 +114,16 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
         }
     }
 
+    #[instrument(
+        level = "info",
+        name = "ssh.version_exchange",
+        skip_all,
+        fields(peer.ssh_id = Empty, preliminary_lines = Empty),
+    )]
     #[allow(clippy::unwrap_used)]
     pub async fn read_ssh_id(&mut self) -> Result<&[u8], Error> {
         let ssh_id = self.id.as_mut().unwrap();
+        let mut preliminary_lines: u32 = 0;
         loop {
             let mut i = 0;
             trace!("read_ssh_id: reading");
@@ -125,10 +133,6 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
             trace!("read {n:?}");
 
             ssh_id.total += n;
-            #[allow(clippy::indexing_slicing)] // length checked
-            {
-                trace!("{:?}", std::str::from_utf8(&ssh_id.buf[..ssh_id.total]));
-            }
             if n == 0 {
                 return Err(Error::Disconnect);
             }
@@ -159,6 +163,15 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
                     if let Ok(s) = std::str::from_utf8(&ssh_id.buf[..i]) {
                         if s.starts_with("SSH-1.99-") || s.starts_with("SSH-2.0-") {
                             ssh_id.sshid_len = i;
+                            let span = Span::current();
+                            span.record("peer.ssh_id", s);
+                            span.record("preliminary_lines", preliminary_lines);
+                            info!(
+                                event = "ssh.version_exchange.completed",
+                                peer.ssh_id = s,
+                                preliminary_lines,
+                                "received peer SSH identification"
+                            );
                             return Ok(ssh_id.id());
                         }
                     }
@@ -166,10 +179,10 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
                 // Else, it is a "preliminary" (see
                 // https://tools.ietf.org/html/rfc4253#section-4.2),
                 // and we can discard it and read the next one.
+                preliminary_lines = preliminary_lines.saturating_add(1);
                 ssh_id.total = 0;
                 ssh_id.bytes_read = 0;
             }
-            trace!("bytes_read: {:?}", ssh_id.bytes_read);
         }
     }
 }

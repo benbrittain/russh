@@ -25,7 +25,7 @@
 //!
 //! #[cfg(unix)]
 //! fn main() {
-//!    env_logger::try_init().unwrap_or(());
+//!    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 //!    let dir = tempfile::tempdir().unwrap();
 //!    let agent_path = dir.path().join("agent");
 //!
@@ -336,13 +336,13 @@ QR+u0AypRPmzHnOPAAAAEXJvb3RAMTQwOTExNTQ5NDBkAQ==
 
     #[test]
     fn test_decode_ed25519_secret_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         decode_secret_key(ED25519_KEY, Some("blabla")).unwrap();
     }
 
     #[test]
     fn test_decode_ed25519_aesctr_secret_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         decode_secret_key(ED25519_AESCTR_KEY, Some("test")).unwrap();
     }
 
@@ -353,7 +353,7 @@ MC4CAQAwBQYDK2VwBCIEINTuctv5E1hK1bbY8fdp+K06/nwoy/HU++CXqI9EdVhC
 
     #[test]
     fn test_decode_rfc8410_ed25519_private_only_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         assert!(
             decode_secret_key(RFC8410_ED25519_PRIVATE_ONLY_KEY, None)
                 .unwrap()
@@ -372,7 +372,7 @@ Z9w7lshQhqowtrbLDFw4rXAxZuE=
 
     #[test]
     fn test_decode_rfc8410_ed25519_private_public_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         assert!(
             decode_secret_key(RFC8410_ED25519_PRIVATE_PUBLIC_KEY, None)
                 .unwrap()
@@ -385,7 +385,7 @@ Z9w7lshQhqowtrbLDFw4rXAxZuE=
     #[cfg(feature = "rsa")]
     #[test]
     fn test_decode_rsa_secret_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         decode_secret_key(RSA_KEY, None).unwrap();
     }
 
@@ -470,7 +470,7 @@ Ve0k2ddxoEsSE15H4lgNHM2iuYKzIqZJOReHRCTff6QGgMYPDqDfFfL1Hc1Ntql0pwAAAA
 
     #[test]
     fn test_parse_p256_public_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let key = "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMxBTpMIGvo7CnordO7wP0QQRqpBwUjOLl4eMhfucfE1sjTYyK5wmTl1UqoSDS1PtRVTBdl+0+9pquFb46U7fwg=";
 
         assert!(
@@ -483,7 +483,7 @@ Ve0k2ddxoEsSE15H4lgNHM2iuYKzIqZJOReHRCTff6QGgMYPDqDfFfL1Hc1Ntql0pwAAAA
 
     #[test]
     fn test_parse_p384_public_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let key = "AAAAE2VjZHNhLXNoYTItbmlzdHAzODQAAAAIbmlzdHAzODQAAABhBBVFgxJxpCaAALZG/S5BHT8/IUQ5mfuKaj7Av9g7Jw59fBEGHfPBz1wFtHGYw5bdLmfVZTIDfogDid5zqJeAKr1AcD06DKTXDzd2EpUjqeLfQ5b3erHuX758fgu/pSDGRA==";
 
         assert!(
@@ -496,7 +496,7 @@ Ve0k2ddxoEsSE15H4lgNHM2iuYKzIqZJOReHRCTff6QGgMYPDqDfFfL1Hc1Ntql0pwAAAA
 
     #[test]
     fn test_parse_p521_public_key() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let key = "AAAAE2VjZHNhLXNoYTItbmlzdHA1MjEAAAAIbmlzdHA1MjEAAACFBAAQepXEpOrzlX22r4E5zEHjhHWeZUe//zaevTanOWRBnnaCGWJFGCdjeAbNOuAmLtXc+HZdJTCZGREeSLSrpJa71QDCgZl0N7DkDUanCpHZJe/DCK6qwtHYbEMn28iLMlGCOrCIa060EyJHbp1xcJx4I1SKj/f/fm3DhhID/do6zyf8Cg==";
 
         assert!(
@@ -509,7 +509,7 @@ Ve0k2ddxoEsSE15H4lgNHM2iuYKzIqZJOReHRCTff6QGgMYPDqDfFfL1Hc1Ntql0pwAAAA
 
     #[test]
     fn test_srhb() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let key = "AAAAB3NzaC1yc2EAAAADAQABAAACAQC0Xtz3tSNgbUQAXem4d+d6hMx7S8Nwm/DOO2AWyWCru+n/+jQ7wz2b5+3oG2+7GbWZNGj8HCc6wJSA3jUsgv1N6PImIWclD14qvoqY3Dea1J0CJgXnnM1xKzBz9C6pDHGvdtySg+yzEO41Xt4u7HFn4Zx5SGuI2NBsF5mtMLZXSi33jCIWVIkrJVd7sZaY8jiqeVZBB/UvkLPWewGVuSXZHT84pNw4+S0Rh6P6zdNutK+JbeuO+5Bav4h9iw4t2sdRkEiWg/AdMoSKmo97Gigq2mKdW12ivnXxz3VfxrCgYJj9WwaUUWSfnAju5SiNly0cTEAN4dJ7yB0mfLKope1kRhPsNaOuUmMUqlu/hBDM/luOCzNjyVJ+0LLB7SV5vOiV7xkVd4KbEGKou8eeCR3yjFazUe/D1pjYPssPL8cJhTSuMc+/UC9zD8yeEZhB9V+vW4NMUR+lh5+XeOzenl65lWYd/nBZXLBbpUMf1AOfbz65xluwCxr2D2lj46iApSIpvE63i3LzFkbGl9GdUiuZJLMFJzOWdhGGc97cB5OVyf8umZLqMHjaImxHEHrnPh1MOVpv87HYJtSBEsN4/omINCMZrk++CRYAIRKRpPKFWV7NQHcvw3m7XLR3KaTYe+0/MINIZwGdou9fLUU3zSd521vDjA/weasH0CyDHq7sZw==";
 
         parse_public_key_base64(key).unwrap();
@@ -518,7 +518,7 @@ Ve0k2ddxoEsSE15H4lgNHM2iuYKzIqZJOReHRCTff6QGgMYPDqDfFfL1Hc1Ntql0pwAAAA
     #[cfg(feature = "rsa")]
     #[test]
     fn test_nikao() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let key = "-----BEGIN RSA PRIVATE KEY-----
 MIIEpQIBAAKCAQEAw/FG8YLVoXhsUVZcWaY7iZekMxQ2TAfSVh0LTnRuzsumeLhb
 0fh4scIt4C4MLwpGe/u3vj290C28jLkOtysqnIpB4iBUrFNRmEz2YuvjOzkFE8Ju
@@ -691,7 +691,7 @@ ocyR
     #[cfg(feature = "rsa")]
     #[test]
     fn test_o01eg() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let key = "-----BEGIN RSA PRIVATE KEY-----
 Proc-Type: 4,ENCRYPTED
@@ -760,7 +760,7 @@ xV/JrzLAwPoKk3bkqys3bUmgo6DxVC/6RmMwPQ0rmpw78kOgEej90g==
     #[cfg(feature = "rsa")]
     #[test]
     fn test_pkcs8() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         println!("test");
         decode_secret_key(PKCS8_RSA, Some("blabla")).unwrap();
     }
@@ -799,7 +799,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
 
     #[test]
     fn test_gpg() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let key = [
             0, 0, 0, 7, 115, 115, 104, 45, 114, 115, 97, 0, 0, 0, 3, 1, 0, 1, 0, 0, 1, 129, 0, 163,
             72, 59, 242, 4, 248, 139, 217, 57, 126, 18, 195, 170, 3, 94, 154, 9, 150, 89, 171, 236,
@@ -830,14 +830,14 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
     #[cfg(feature = "rsa")]
     #[test]
     fn test_pkcs8_encrypted() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         println!("test");
         decode_secret_key(PKCS8_ENCRYPTED, Some("blabla")).unwrap();
     }
 
     #[cfg(unix)]
     async fn test_client_agent(key: PrivateKey) -> Result<(), Box<dyn std::error::Error>> {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         use std::process::Stdio;
 
         let dir = tempfile::tempdir()?;
@@ -913,7 +913,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
     #[test]
     #[cfg(all(unix, feature = "rsa"))]
     fn test_agent() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
         let dir = tempfile::tempdir().unwrap();
         let agent_path = dir.path().join("agent");
 
@@ -1051,7 +1051,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
                 use std::io::Write;
         use std::process::Stdio;
 
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let (mut agent, agent_path, dir) = spawn_agent().await.unwrap();
 
@@ -1177,7 +1177,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
                 use std::io::Write;
         use std::process::Stdio;
 
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let (mut agent, agent_path, dir) = spawn_agent().await.unwrap();
 
@@ -1252,7 +1252,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
     async fn test_sign_request_cert_missing_key_returns_agent_failure() {
         use crate::keys::agent::client::AgentClient;
         
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let (mut agent, agent_path, _dir) = spawn_agent().await.unwrap();
 
@@ -1304,7 +1304,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
     async fn test_sign_request_missing_key_returns_agent_failure() {
         use crate::keys::agent::client::AgentClient;
         
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let (mut agent, agent_path, _dir) = spawn_agent().await.unwrap();
 
@@ -1384,7 +1384,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
                 use std::io::Write;
         use std::process::Stdio;
 
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let (mut agent, agent_path, dir) = spawn_agent().await.unwrap();
 
@@ -1478,7 +1478,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
                 use std::io::Write;
         use std::process::Stdio;
 
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         let (mut agent, agent_path, dir) = spawn_agent().await.unwrap();
 

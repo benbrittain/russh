@@ -46,7 +46,8 @@ use std::time::Duration;
 use futures::Future;
 use futures::task::{Context, Poll};
 use kex::ClientKex;
-use log::{debug, error, trace, warn};
+use tracing::field::Empty;
+use tracing::{error, info, instrument, warn, Span};
 use russh_util::time::Instant;
 use ssh_encoding::Decode;
 use ssh_key::{Algorithm, Certificate, HashAlg, PrivateKey, PublicKey};
@@ -99,12 +100,6 @@ pub struct Session {
     inbound_channel_receiver: Receiver<Msg>,
     open_global_requests: VecDeque<GlobalRequestResponse>,
     server_sig_algs: Option<Vec<Algorithm>>,
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        debug!("drop session")
-    }
 }
 
 #[derive(Debug)]
@@ -264,12 +259,6 @@ pub struct Handle<H: Handler> {
     receiver: UnboundedReceiver<Reply>,
     join: russh_util::runtime::JoinHandle<Result<(), H::Error>>,
     channel_buffer_size: usize,
-}
-
-impl<H: Handler> Drop for Handle<H> {
-    fn drop(&mut self) {
-        debug!("drop handle")
-    }
 }
 
 impl<H: Handler> Handle<H> {
@@ -573,6 +562,7 @@ impl<H: Handler> Handle<H> {
         &self,
         mut receiver: Receiver<ChannelMsg>,
         window_size_ref: WindowSizeRef,
+        span_rx: tokio::sync::oneshot::Receiver<tracing::Span>,
     ) -> Result<Channel<Msg>, crate::Error> {
         loop {
             match receiver.recv().await {
@@ -583,12 +573,19 @@ impl<H: Handler> Handle<H> {
                 }) => {
                     window_size_ref.update(window_size).await;
 
+                    // The session task fires this span when it sends
+                    // ChannelMsg::Open. If the sender was dropped without
+                    // sending (session task aborted), fall back to a no-op
+                    // span so downstream tracing still compiles.
+                    let channel_span = span_rx.await.unwrap_or_else(|_| tracing::Span::none());
+
                     return Ok(Channel {
                         write_half: ChannelWriteHalf {
                             id,
                             sender: self.sender.clone(),
                             max_packet_size,
                             window_size: window_size_ref,
+                            channel_span,
                         },
                         read_half: ChannelReadHalf { receiver },
                     });
@@ -597,12 +594,9 @@ impl<H: Handler> Handle<H> {
                     return Err(crate::Error::ChannelOpenFailure(reason));
                 }
                 None => {
-                    debug!("channel confirmation sender was dropped");
                     return Err(crate::Error::Disconnect);
                 }
-                msg => {
-                    debug!("msg = {msg:?}");
-                }
+                _ => {}
             }
         }
     }
@@ -674,14 +668,14 @@ impl<H: Handler> Handle<H> {
     /// `confirmed` field of the corresponding `Channel`.
     pub async fn channel_open_session(&self) -> Result<Channel<Msg>, crate::Error> {
         let (sender, receiver) = channel(self.channel_buffer_size);
-        let channel_ref = ChannelRef::new(sender);
+        let (channel_ref, span_rx) = ChannelRef::with_span_tx(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
         self.sender
             .send(Msg::ChannelOpenSession { channel_ref })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, span_rx)
             .await
     }
 
@@ -692,7 +686,7 @@ impl<H: Handler> Handle<H> {
         originator_port: u32,
     ) -> Result<Channel<Msg>, crate::Error> {
         let (sender, receiver) = channel(self.channel_buffer_size);
-        let channel_ref = ChannelRef::new(sender);
+        let (channel_ref, span_rx) = ChannelRef::with_span_tx(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
         self.sender
@@ -703,7 +697,7 @@ impl<H: Handler> Handle<H> {
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, span_rx)
             .await
     }
 
@@ -723,7 +717,7 @@ impl<H: Handler> Handle<H> {
         originator_port: u32,
     ) -> Result<Channel<Msg>, crate::Error> {
         let (sender, receiver) = channel(self.channel_buffer_size);
-        let channel_ref = ChannelRef::new(sender);
+        let (channel_ref, span_rx) = ChannelRef::with_span_tx(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
         self.sender
@@ -736,7 +730,7 @@ impl<H: Handler> Handle<H> {
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, span_rx)
             .await
     }
 
@@ -745,7 +739,7 @@ impl<H: Handler> Handle<H> {
         socket_path: S,
     ) -> Result<Channel<Msg>, crate::Error> {
         let (sender, receiver) = channel(self.channel_buffer_size);
-        let channel_ref = ChannelRef::new(sender);
+        let (channel_ref, span_rx) = ChannelRef::with_span_tx(sender);
         let window_size_ref = channel_ref.window_size().clone();
 
         self.sender
@@ -755,23 +749,36 @@ impl<H: Handler> Handle<H> {
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
-        self.wait_channel_confirmation(receiver, window_size_ref)
+        self.wait_channel_confirmation(receiver, window_size_ref, span_rx)
             .await
     }
 
     /// Requests the server to open a TCP/IP forward channel
     ///
     /// If port == 0 the server will choose a port that will be returned, returns 0 otherwise
+    #[instrument(
+        level = "info",
+        name = "ssh.global_request",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            ssh.global_request.name = "tcpip-forward",
+            ssh.forward.bind_address = Empty,
+            ssh.forward.bind_port = port,
+        )
+    )]
     pub async fn tcpip_forward<A: Into<String>>(
         &self,
         address: A,
         port: u32,
     ) -> Result<u32, crate::Error> {
+        let address = address.into();
+        Span::current().record("ssh.forward.bind_address", address.as_str());
         let (reply_send, reply_recv) = oneshot::channel();
         self.sender
             .send(Msg::TcpIpForward {
                 reply_channel: Some(reply_send),
-                address: address.into(),
+                address,
                 port,
             })
             .await
@@ -780,24 +787,34 @@ impl<H: Handler> Handle<H> {
         match reply_recv.await {
             Ok(Some(port)) => Ok(port),
             Ok(None) => Err(crate::Error::RequestDenied),
-            Err(e) => {
-                error!("Unable to receive TcpIpForward result: {e:?}");
-                Err(crate::Error::Disconnect)
-            }
+            Err(_) => Err(crate::Error::Disconnect),
         }
     }
 
     // Requests the server to close a TCP/IP forward channel
+    #[instrument(
+        level = "info",
+        name = "ssh.global_request",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            ssh.global_request.name = "cancel-tcpip-forward",
+            ssh.forward.bind_address = Empty,
+            ssh.forward.bind_port = port,
+        )
+    )]
     pub async fn cancel_tcpip_forward<A: Into<String>>(
         &self,
         address: A,
         port: u32,
     ) -> Result<(), crate::Error> {
+        let address = address.into();
+        Span::current().record("ssh.forward.bind_address", address.as_str());
         let (reply_send, reply_recv) = oneshot::channel();
         self.sender
             .send(Msg::CancelTcpIpForward {
                 reply_channel: Some(reply_send),
-                address: address.into(),
+                address,
                 port,
             })
             .await
@@ -806,23 +823,32 @@ impl<H: Handler> Handle<H> {
         match reply_recv.await {
             Ok(true) => Ok(()),
             Ok(false) => Err(crate::Error::RequestDenied),
-            Err(e) => {
-                error!("Unable to receive CancelTcpIpForward result: {e:?}");
-                Err(crate::Error::Disconnect)
-            }
+            Err(_) => Err(crate::Error::Disconnect),
         }
     }
 
     // Requests the server to open a UDS forward channel
+    #[instrument(
+        level = "info",
+        name = "ssh.global_request",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            ssh.global_request.name = "streamlocal-forward@openssh.com",
+            ssh.forward.socket_path = Empty,
+        )
+    )]
     pub async fn streamlocal_forward<A: Into<String>>(
         &self,
         socket_path: A,
     ) -> Result<(), crate::Error> {
+        let socket_path = socket_path.into();
+        Span::current().record("ssh.forward.socket_path", socket_path.as_str());
         let (reply_send, reply_recv) = oneshot::channel();
         self.sender
             .send(Msg::StreamLocalForward {
                 reply_channel: Some(reply_send),
-                socket_path: socket_path.into(),
+                socket_path,
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
@@ -830,23 +856,32 @@ impl<H: Handler> Handle<H> {
         match reply_recv.await {
             Ok(true) => Ok(()),
             Ok(false) => Err(crate::Error::RequestDenied),
-            Err(e) => {
-                error!("Unable to receive StreamLocalForward result: {e:?}");
-                Err(crate::Error::Disconnect)
-            }
+            Err(_) => Err(crate::Error::Disconnect),
         }
     }
 
     // Requests the server to close a UDS forward channel
+    #[instrument(
+        level = "info",
+        name = "ssh.global_request",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            ssh.global_request.name = "cancel-streamlocal-forward@openssh.com",
+            ssh.forward.socket_path = Empty,
+        )
+    )]
     pub async fn cancel_streamlocal_forward<A: Into<String>>(
         &self,
         socket_path: A,
     ) -> Result<(), crate::Error> {
+        let socket_path = socket_path.into();
+        Span::current().record("ssh.forward.socket_path", socket_path.as_str());
         let (reply_send, reply_recv) = oneshot::channel();
         self.sender
             .send(Msg::CancelStreamLocalForward {
                 reply_channel: Some(reply_send),
-                socket_path: socket_path.into(),
+                socket_path,
             })
             .await
             .map_err(|_| crate::Error::SendError)?;
@@ -854,10 +889,7 @@ impl<H: Handler> Handle<H> {
         match reply_recv.await {
             Ok(true) => Ok(()),
             Ok(false) => Err(crate::Error::RequestDenied),
-            Err(e) => {
-                error!("Unable to receive CancelStreamLocalForward result: {e:?}");
-                Err(crate::Error::Disconnect)
-            }
+            Err(_) => Err(crate::Error::Disconnect),
         }
     }
 
@@ -972,7 +1004,8 @@ pub async fn connect<H: Handler + Send + 'static, A: tokio::net::ToSocketAddrs>(
         }
     }
 
-    connect_stream(config, socket, handler).await
+    let peer_addr = socket.peer_addr().ok();
+    connect_stream_inner(config, socket, peer_addr, handler).await
 }
 
 /// Connect a stream to a server. This stream must implement
@@ -981,7 +1014,20 @@ pub async fn connect<H: Handler + Send + 'static, A: tokio::net::ToSocketAddrs>(
 /// [`tokio::net::TcpStream`] and then calls this function under the hood.
 pub async fn connect_stream<H, R>(
     config: Arc<Config>,
+    stream: R,
+    handler: H,
+) -> Result<Handle<H>, H::Error>
+where
+    H: Handler + Send + 'static,
+    R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    connect_stream_inner(config, stream, None, handler).await
+}
+
+async fn connect_stream_inner<H, R>(
+    config: Arc<Config>,
     mut stream: R,
+    peer_addr: Option<std::net::SocketAddr>,
     handler: H,
 ) -> Result<Handle<H>, H::Error>
 where
@@ -990,8 +1036,6 @@ where
 {
     // Writing SSH id.
     let mut write_buffer = SSHBuffer::new();
-
-    debug!("ssh id = {:?}", config.as_ref().client_id);
 
     write_buffer.send_ssh_id(&config.as_ref().client_id);
     map_err!(stream.write_all(&write_buffer.buffer).await)?;
@@ -1004,8 +1048,9 @@ where
     let (session_sender, handle_receiver) = unbounded_channel();
     if config.maximum_packet_size > 65535 {
         error!(
-            "Maximum packet size ({:?}) should not larger than a TCP packet (65535)",
-            config.maximum_packet_size
+            event = "ssh.config.invalid",
+            ssh.config.maximum_packet_size = config.maximum_packet_size,
+            "maximum_packet_size exceeds 65535 TCP limit"
         );
     }
     let channel_buffer_size = config.channel_buffer_size;
@@ -1026,6 +1071,12 @@ where
             alive_timeouts: 0,
             received_data: false,
             remote_sshid: sshid.into(),
+            bytes_sent: 0,
+            bytes_received: 0,
+            close_reason: None,
+            session_span: Span::none(),
+            auth_span: None,
+            peer_addr,
         },
         session_receiver,
         session_sender,
@@ -1034,10 +1085,9 @@ where
     let (kex_done_signal, kex_done_signal_rx) = oneshot::channel();
     let join = russh_util::runtime::spawn(session.run(stream, handler, Some(kex_done_signal)));
 
-    if let Err(err) = kex_done_signal_rx.await {
+    if kex_done_signal_rx.await.is_err() {
         // kex_done_signal Sender is dropped when the session
-        // fails before a succesful key exchange
-        debug!("kex_done_signal sender was dropped {err:?}");
+        // fails before a successful key exchange.
         join.await.map_err(crate::Error::Join)??;
         return Err(H::Error::from(crate::Error::Disconnect));
     }
@@ -1104,12 +1154,52 @@ impl Session {
         }
     }
 
+    #[instrument(
+        level = "info",
+        name = "ssh.session",
+        skip_all,
+        fields(
+            otel.kind = "client",
+            network.protocol.name = "ssh",
+            network.protocol.version = "2.0",
+            role = "client",
+            user.name = %self.common.auth_user,
+            server.ssh_id = Empty,
+            server.address = Empty,
+            server.port = Empty,
+            ssh.kex.algorithm = Empty,
+            ssh.cipher = Empty,
+            ssh.mac.client_to_server = Empty,
+            ssh.mac.server_to_client = Empty,
+            ssh.compression.client_to_server = Empty,
+            ssh.compression.server_to_client = Empty,
+            ssh.hostkey.algorithm = Empty,
+            ssh.strict_kex = Empty,
+            bytes_sent = Empty,
+            bytes_received = Empty,
+            close_reason = Empty,
+            otel.status_code = Empty,
+            error.type = Empty,
+        )
+    )]
     async fn run<H: Handler + Send, R: AsyncRead + AsyncWrite + Unpin + Send>(
         mut self,
         stream: SshRead<R>,
         mut handler: H,
         mut kex_done_signal: Option<oneshot::Sender<()>>,
     ) -> Result<(), H::Error> {
+        self.common.session_span = Span::current();
+        self.common.session_span.record(
+            "server.ssh_id",
+            String::from_utf8_lossy(&self.common.remote_sshid).as_ref(),
+        );
+        if let Some(addr) = self.common.peer_addr {
+            self.common
+                .session_span
+                .record("server.address", addr.ip().to_string().as_str())
+                .record("server.port", addr.port());
+        }
+        info!(event = "ssh.session.opened", "client session started");
         let (stream_read, mut stream_write) = stream.split();
         let result = self
             .run_inner(
@@ -1119,7 +1209,26 @@ impl Session {
                 &mut kex_done_signal,
             )
             .await;
-        trace!("disconnected");
+        if self.common.close_reason.is_none() && result.is_err() {
+            self.common.close_reason = Some("error");
+        }
+        let close_reason = self.common.close_reason.unwrap_or("loop_exit");
+        self.common
+            .session_span
+            .record("bytes_sent", self.common.bytes_sent)
+            .record("bytes_received", self.common.bytes_received)
+            .record("close_reason", close_reason);
+        match result.as_ref() {
+            Ok(_) => {
+                self.common.session_span.record("otel.status_code", "ok");
+            }
+            Err(_) => {
+                self.common
+                    .session_span
+                    .record("otel.status_code", "error")
+                    .record("error.type", close_reason);
+            }
+        }
         self.receiver.close();
         self.inbound_channel_receiver.close();
         map_err!(stream_write.shutdown().await)?;
@@ -1140,7 +1249,6 @@ impl Session {
                     // The kex signal has been consumed, so no one is
                     // awaiting the result of this coroutine
                     // We're better off passing the error into the Handler
-                    debug!("disconnected {e:?}");
                     handler.disconnected(DisconnectReason::Error(e)).await?;
                     Err(H::Error::from(crate::Error::Disconnect))
                 }
@@ -1158,7 +1266,8 @@ impl Session {
         let mut result: Result<RemoteDisconnectInfo, H::Error> = Err(Error::Disconnect.into());
         self.flush()?;
 
-        map_err!(self.common.packet_writer.flush_into(stream_write).await)?;
+        let initial_sent = map_err!(self.common.packet_writer.flush_into(stream_write).await)?;
+        self.common.bytes_sent += initial_sent as u64;
 
         let buffer = SSHBuffer::new();
 
@@ -1184,13 +1293,20 @@ impl Session {
             tokio::select! {
                 r = &mut reading => {
                     let (stream_read, mut buffer, mut opening_cipher) = match r {
-                        Ok((_, stream_read, buffer, opening_cipher)) => (stream_read, buffer, opening_cipher),
-                        Err(e) => return Err(e.into())
+                        Ok((n, stream_read, buffer, opening_cipher)) => {
+                            self.common.bytes_received += n as u64;
+                            (stream_read, buffer, opening_cipher)
+                        }
+                        Err(e) => {
+                            self.common.close_reason = Some("read_error");
+                            return Err(e.into());
+                        }
                     };
 
                     std::mem::swap(&mut opening_cipher, &mut self.common.remote_to_local);
 
                     if buffer.buffer.len() < 5 {
+                        self.common.close_reason = Some("eof");
                         break
                     }
 
@@ -1198,7 +1314,7 @@ impl Session {
                     if !pkt.buffer.is_empty() {
                         #[allow(clippy::indexing_slicing)] // length checked
                         if pkt.buffer[0] == crate::msg::DISCONNECT {
-                            debug!("received disconnect");
+                            self.common.close_reason = Some("peer_disconnect");
                             result = self.process_disconnect(&pkt).map_err(H::Error::from);
                         } else {
                             self.common.received_data = true;
@@ -1215,7 +1331,7 @@ impl Session {
                         if matches!(enc.state, EncryptedState::Authenticated) {
                             self.common.alive_timeouts = self.common.alive_timeouts.saturating_add(1);
                             if self.common.config.keepalive_max != 0 && self.common.alive_timeouts > self.common.config.keepalive_max {
-                                debug!("Timeout, server not responding to keepalives");
+                                self.common.close_reason = Some("keepalive_timeout");
                                 return Err(crate::Error::KeepaliveTimeout.into());
                             }
                             sent_keepalive = true;
@@ -1224,7 +1340,7 @@ impl Session {
                     }
                 }
                 () = &mut inactivity_timer => {
-                    debug!("timeout");
+                    self.common.close_reason = Some("inactivity_timeout");
                     return Err(crate::Error::InactivityTimeout.into());
                 }
                 msg = self.receiver.recv(), if !self.kex.active() => {
@@ -1261,7 +1377,8 @@ impl Session {
             };
 
             self.flush()?;
-            map_err!(self.common.packet_writer.flush_into(stream_write).await)?;
+            let sent = map_err!(self.common.packet_writer.flush_into(stream_write).await)?;
+            self.common.bytes_sent += sent as u64;
 
             if let Some(ref mut enc) = self.common.encrypted {
                 if let EncryptedState::InitCompression = enc.state {
@@ -1506,20 +1623,25 @@ impl Session {
     }
 
     fn begin_rekey(&mut self) -> Result<(), crate::Error> {
-        debug!("beginning re-key");
+        let cause = match &self.common.encrypted {
+            None => KexCause::Initial,
+            Some(enc) => KexCause::Rekey {
+                strict: self.common.strict_kex,
+                session_id: enc.session_id.clone(),
+            },
+        };
+        info!(
+            event = "ssh.kex.started",
+            ssh.kex.cause = cause.span_tag(),
+            role = "client",
+            "key exchange started"
+        );
         let mut kex = ClientKex::new(
             self.common.config.clone(),
             &self.common.config.client_id,
             &self.common.remote_sshid,
-            match &self.common.encrypted {
-                None => KexCause::Initial,
-                Some(enc) => KexCause::Rekey {
-                    strict: self.common.strict_kex,
-                    session_id: enc.session_id.clone(),
-                },
-            },
+            cause,
         );
-
         kex.kexinit(&mut self.common.packet_writer)?;
         self.kex = SessionKexState::InProgress(kex);
         Ok(())
@@ -1557,11 +1679,6 @@ async fn reply<H: Handler>(
     pkt: &mut IncomingSshPacket,
 ) -> Result<(), H::Error> {
     if let Some(message_type) = pkt.buffer.first() {
-        debug!(
-            "< msg type {message_type:?}, seqn {:?}, len {}",
-            pkt.seqn.0,
-            pkt.buffer.len()
-        );
         if session.common.strict_kex && session.common.encrypted.is_none() {
             let seqno = pkt.seqn.0 - 1; // was incremented after read()
             validate_server_msg_strict_kex(*message_type, seqno as usize)?;
@@ -1574,7 +1691,11 @@ async fn reply<H: Handler>(
 
     if pkt.buffer.first() == Some(&msg::KEXINIT) && session.kex == SessionKexState::Idle {
         // Not currently in a rekey but received KEXINIT
-        debug!("server has initiated re-key");
+        info!(
+            event = "ssh.kex.peer_initiated",
+            role = "client",
+            "peer initiated key exchange"
+        );
         session.begin_rekey()?;
         // Kex will consume the packet right away
     }
@@ -1587,10 +1708,8 @@ async fn reply<H: Handler>(
 
             match progress {
                 KexProgress::NeedsReply { kex, reset_seqn } => {
-                    debug!("kex impl continues: {kex:?}");
                     session.kex = SessionKexState::InProgress(kex);
                     if reset_seqn {
-                        debug!("kex impl requests seqno reset");
                         session.common.reset_seqn();
                     }
                 }
@@ -1598,7 +1717,6 @@ async fn reply<H: Handler>(
                     server_host_key,
                     newkeys,
                 } => {
-                    debug!("kex impl has completed");
                     session.common.strict_kex =
                         session.common.strict_kex || newkeys.names.strict_kex();
 
@@ -1643,8 +1761,6 @@ async fn reply<H: Handler>(
                     if session.common.strict_kex {
                         pkt.seqn = Wrapping(0);
                     }
-
-                    debug!("kex done");
                 }
             }
 
@@ -2180,7 +2296,7 @@ pub trait Handler: Sized + Send {
         session: &mut Session,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async move {
-            debug!("openssh_ext_hostkeys_announced: {keys:?}");
+            let _ = keys;
             Ok(())
         }
     }
@@ -2194,7 +2310,6 @@ pub trait Handler: Sized + Send {
         reason: DisconnectReason<Self::Error>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         async {
-            debug!("disconnected: {reason:?}");
             match reason {
                 DisconnectReason::ReceivedDisconnect(_) => Ok(()),
                 DisconnectReason::Error(e) => Err(e),

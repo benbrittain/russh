@@ -68,7 +68,7 @@ hmac.workspace = true
 hmac_0_13 = { package = "hmac", version = "0.13.0" }
 inout = { version = "0.1", features = ["std"] }
 keccak = "0.2.0"
-log.workspace = true
+tracing.workspace = true
 md5 = "0.7"
 ml-kem = "0.3.0-rc.1"
 module-lattice = "0.2"
@@ -132,7 +132,7 @@ pageant = { version = "0.2", path = "../pageant" }
 
 [dev-dependencies]
 anyhow = "1.0.4"
-env_logger.workspace = true
+tracing-subscriber.workspace = true
 clap = { version = "4", features = ["derive"] }
 tokio = { workspace = true, features = [
   "io-std",

@@ -4,7 +4,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use log::{debug, error, warn};
+use tracing::{debug, error, warn};
 use ssh_encoding::{Decode, Encode};
 use ssh_key::{Mpint, PublicKey, Signature};
 
@@ -125,7 +125,6 @@ impl ClientKex {
                         &self.cause,
                     )?
                 };
-                debug!("negotiated algorithms: {names:?}");
 
                 // seqno has already been incremented after read()
                 if names.strict_kex() && !self.cause.is_rekey() && input.seqn.0 != 1 {
