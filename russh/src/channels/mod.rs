@@ -345,6 +345,58 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
         Ok(())
     }
 
+    /// Send an already-owned [`Bytes`] as one or more `SSH_MSG_CHANNEL_DATA`
+    /// packets, splitting at `max_packet_size` and respecting the peer's
+    /// window. Zero-copy: each chunk is a refcounted slice of the input,
+    /// unlike [`Self::data`] which copies from an `AsyncRead`.
+    pub async fn send_data_bytes(&self, data: Bytes) -> Result<(), Error> {
+        self.send_bytes_inner(None, data).await
+    }
+
+    /// Like [`Self::send_data_bytes`] but sends `SSH_MSG_CHANNEL_EXTENDED_DATA`
+    /// (e.g. `ext = 1` for stderr).
+    pub async fn send_extended_data_bytes(&self, ext: u32, data: Bytes) -> Result<(), Error> {
+        self.send_bytes_inner(Some(ext), data).await
+    }
+
+    async fn send_bytes_inner(&self, ext: Option<u32>, mut data: Bytes) -> Result<(), Error> {
+        while !data.is_empty() {
+            let writable = {
+                let mut window = self.window_size.value.lock().await;
+                let w = self
+                    .max_packet_size
+                    .min(*window)
+                    .min(u32::try_from(data.len()).unwrap_or(u32::MAX))
+                    as usize;
+                if w > 0 {
+                    *window -= w as u32;
+                    // Chain-wake any other waiter if window still has room,
+                    // mirroring ChannelTx::poll_writable.
+                    if *window > 0 {
+                        self.window_size.notifier.notify_one();
+                    }
+                }
+                w
+            };
+
+            if writable == 0 {
+                // Notify permits persist across drop-then-await, so we
+                // won't miss a WindowAdjusted that lands between the
+                // lock release above and the await below.
+                self.window_size.notifier.notified().await;
+                continue;
+            }
+
+            let chunk = data.split_to(writable);
+            let msg = match ext {
+                None => ChannelMsg::Data { data: chunk },
+                Some(ext) => ChannelMsg::ExtendedData { data: chunk, ext },
+            };
+            self.send_msg(msg).await?;
+        }
+        Ok(())
+    }
+
     pub async fn eof(&self) -> Result<(), Error> {
         self.send_msg(ChannelMsg::Eof).await
     }
@@ -565,6 +617,16 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
         data: R,
     ) -> Result<(), Error> {
         self.write_half.extended_data(ext, data).await
+    }
+
+    /// Zero-copy send. See [`ChannelWriteHalf::send_data_bytes`].
+    pub async fn send_data_bytes(&self, data: Bytes) -> Result<(), Error> {
+        self.write_half.send_data_bytes(data).await
+    }
+
+    /// Zero-copy send. See [`ChannelWriteHalf::send_extended_data_bytes`].
+    pub async fn send_extended_data_bytes(&self, ext: u32, data: Bytes) -> Result<(), Error> {
+        self.write_half.send_extended_data_bytes(ext, data).await
     }
 
     pub async fn eof(&self) -> Result<(), Error> {
