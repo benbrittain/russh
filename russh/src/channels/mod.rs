@@ -178,6 +178,13 @@ pub struct ChannelWriteHalf<Send: From<(ChannelId, ChannelMsg)>> {
     pub(crate) sender: Sender<Send>,
     pub(crate) max_packet_size: u32,
     pub(crate) window_size: WindowSizeRef,
+    // Per-channel `ssh.channel` tracing span, created on the session task so
+    // its parent is the owning `ssh.session`. Writers produced by make_writer /
+    // into_stream run on the caller's task; they re-enter this span when
+    // emitting backpressure events so the events stay correlated with the
+    // channel (and transitively the session) even when the user's current
+    // span is something unrelated.
+    pub(crate) channel_span: tracing::Span,
 }
 
 impl<S: From<(ChannelId, ChannelMsg)>> std::fmt::Debug for ChannelWriteHalf<S> {
@@ -339,11 +346,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
     }
 
     /// Send owned extended data to a channel without copying it into the `AsyncWrite` path.
-    pub async fn extended_data_bytes(
-        &self,
-        ext: u32,
-        data: impl Into<Bytes>,
-    ) -> Result<(), Error> {
+    pub async fn extended_data_bytes(&self, ext: u32, data: impl Into<Bytes>) -> Result<(), Error> {
         self.send_bytes(Some(ext), data.into()).await
     }
 
@@ -438,6 +441,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> ChannelWriteHalf<
             self.window_size.subscribe(),
             self.max_packet_size,
             ext,
+            self.channel_span.clone(),
         )
     }
 }
@@ -458,6 +462,27 @@ impl<T: From<(ChannelId, ChannelMsg)>> std::fmt::Debug for Channel<T> {
     }
 }
 
+/// Build the `ssh.channel` tracing span that scopes per-channel events and
+/// becomes the `channel_span` on [`ChannelWriteHalf`]. Caller supplies the
+/// owning session span so the new span parents under `ssh.session` regardless
+/// of what's currently on the span stack.
+pub(crate) fn make_channel_span(
+    session_span: &tracing::Span,
+    id: ChannelId,
+    channel_type: &str,
+) -> tracing::Span {
+    tracing::info_span!(
+        parent: session_span,
+        "ssh.channel",
+        otel.kind = "internal",
+        ssh.channel.id = %u32::from(id),
+        ssh.channel.type = channel_type,
+        ssh.channel.bytes_sent = tracing::field::Empty,
+        ssh.channel.bytes_received = tracing::field::Empty,
+        ssh.channel.close_reason = tracing::field::Empty,
+    )
+}
+
 impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     pub(crate) fn new(
         id: ChannelId,
@@ -465,6 +490,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
         max_packet_size: u32,
         window_size: u32,
         channel_buffer_size: usize,
+        channel_span: tracing::Span,
     ) -> (Self, ChannelRef) {
         let (tx, rx) = tokio::sync::mpsc::channel(channel_buffer_size);
         let window_size = WindowSizeRef::new(window_size);
@@ -474,6 +500,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
             sender,
             max_packet_size,
             window_size: window_size.clone(),
+            channel_span,
         };
 
         (
@@ -484,6 +511,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
             ChannelRef {
                 sender: tx,
                 window_size,
+                span_tx: None,
             },
         )
     }
@@ -630,11 +658,7 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     }
 
     /// Send owned extended data to a channel without copying it into the `AsyncWrite` path.
-    pub async fn extended_data_bytes(
-        &self,
-        ext: u32,
-        data: impl Into<Bytes>,
-    ) -> Result<(), Error> {
+    pub async fn extended_data_bytes(&self, ext: u32, data: impl Into<Bytes>) -> Result<(), Error> {
         self.write_half.extended_data_bytes(ext, data).await
     }
 
@@ -659,17 +683,16 @@ impl<S: From<(ChannelId, ChannelMsg)> + Send + Sync + 'static> Channel<S> {
     /// Consume the [`Channel`] to produce a bidirectionnal stream,
     /// sending and receiving [`ChannelMsg::Data`] as `AsyncRead` + `AsyncWrite`.
     pub fn into_stream(self) -> ChannelStream<S> {
-        ChannelStream::new(
-            io::ChannelTx::new(
-                self.write_half.sender.clone(),
-                self.write_half.id,
-                self.write_half.window_size.value.clone(),
-                self.write_half.window_size.subscribe(),
-                self.write_half.max_packet_size,
-                None,
-            ),
-            io::ChannelRx::new(io::ChannelCloseOnDrop(self), None),
-        )
+        let tx = io::ChannelTx::new(
+            self.write_half.sender.clone(),
+            self.write_half.id,
+            self.write_half.window_size.value.clone(),
+            self.write_half.window_size.subscribe(),
+            self.write_half.max_packet_size,
+            None,
+            self.write_half.channel_span.clone(),
+        );
+        ChannelStream::new(tx, io::ChannelRx::new(io::ChannelCloseOnDrop(self), None))
     }
 
     /// Make a reader for the [`Channel`] to receive [`ChannelMsg::Data`]
@@ -717,6 +740,7 @@ mod tests {
                 sender,
                 max_packet_size,
                 window_size,
+                channel_span: tracing::Span::none(),
             },
             receiver,
         )
@@ -828,10 +852,19 @@ mod tests {
     #[tokio::test]
     async fn channel_data_bytes_forwards_to_write_half() {
         let (sender, mut receiver) = mpsc::channel(8);
-        let (channel, _reference) =
-            Channel::<(ChannelId, ChannelMsg)>::new(ChannelId(9), sender, 1024, 1024, 8);
+        let (channel, _reference) = Channel::<(ChannelId, ChannelMsg)>::new(
+            ChannelId(9),
+            sender,
+            1024,
+            1024,
+            8,
+            tracing::Span::none(),
+        );
 
-        channel.data_bytes(Bytes::from_static(b"channel")).await.unwrap();
+        channel
+            .data_bytes(Bytes::from_static(b"channel"))
+            .await
+            .unwrap();
 
         match receiver.recv().await.unwrap() {
             (ChannelId(9), ChannelMsg::Data { data }) => {

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use log::{LevelFilter, error, info};
 use russh::keys::*;
 use russh::*;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tracing::{error, info};
 
 struct Client;
 
@@ -33,8 +33,11 @@ impl client::Handler for Client {
 
 #[tokio::main]
 async fn main() {
-    env_logger::builder()
-        .filter_level(LevelFilter::Debug)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
         .init();
 
     let config = russh::client::Config::default();

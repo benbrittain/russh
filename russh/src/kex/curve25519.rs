@@ -1,8 +1,8 @@
 use byteorder::{BigEndian, ByteOrder};
 use curve25519_dalek::montgomery::MontgomeryPoint;
-use log::debug;
 use sha2::Digest;
 use ssh_encoding::{Encode, Writer};
+use tracing::debug;
 
 use super::{
     KexAlgorithm, KexAlgorithmImplementor, KexType, SharedSecret, compute_keys, encode_mpint,
@@ -215,7 +215,8 @@ mod tests {
             };
             let mut exchange = Exchange::new(b"client", b"server");
             assert!(
-                kex.server_dh(&mut exchange, &kex_ecdh_init(pubkey)).is_err(),
+                kex.server_dh(&mut exchange, &kex_ecdh_init(pubkey))
+                    .is_err(),
                 "accepted low-order point {pubkey:02x?}"
             );
         }
@@ -229,6 +230,7 @@ mod tests {
         };
         let mut exchange = Exchange::new(b"client", b"server");
         let peer = MontgomeryPoint::mul_base_clamped(rand::random::<[u8; 32]>());
-        kex.server_dh(&mut exchange, &kex_ecdh_init(peer.0)).unwrap();
+        kex.server_dh(&mut exchange, &kex_ecdh_init(peer.0))
+            .unwrap();
     }
 }

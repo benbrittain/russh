@@ -10,17 +10,20 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use log::info;
 use russh::keys::*;
 use russh::*;
 use termion::raw::IntoRawMode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::ToSocketAddrs;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
 
     // CLI options are defined later in this file

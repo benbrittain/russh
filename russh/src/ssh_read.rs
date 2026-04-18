@@ -1,8 +1,9 @@
 use std::pin::Pin;
 
 use futures::task::*;
-use log::trace;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tracing::field::Empty;
+use tracing::{Span, instrument, trace};
 
 use crate::Error;
 
@@ -148,6 +149,12 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
         self.read_ssh_id_inner(false).await
     }
 
+    #[instrument(
+        level = "info",
+        name = "ssh.version_exchange",
+        skip_all,
+        fields(peer.ssh_id = Empty, preliminary_lines = Empty),
+    )]
     async fn read_ssh_id_inner(&mut self, allow_pre_banner_lines: bool) -> Result<&[u8], Error> {
         let ssh_id = self.id.as_mut().ok_or(Error::Inconsistent)?;
         loop {
@@ -162,10 +169,6 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
                 trace!("read {n:?}");
 
                 ssh_id.total += n;
-                #[allow(clippy::indexing_slicing)] // length checked
-                {
-                    trace!("{:?}", std::str::from_utf8(&ssh_id.buf[..ssh_id.total]));
-                }
                 if n == 0 {
                     return Err(Error::Disconnect);
                 }
@@ -193,6 +196,9 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
                         && (s.starts_with("SSH-1.99-") || s.starts_with("SSH-2.0-"))
                     {
                         ssh_id.sshid_len = i;
+                        let span = Span::current();
+                        span.record("peer.ssh_id", s);
+                        span.record("preliminary_lines", ssh_id.pre_banner_lines);
                         return Ok(ssh_id.id());
                     }
                 }
@@ -208,15 +214,15 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
                 // and we can discard it and read the next one.
                 ssh_id.discard_line();
             }
-            trace!("bytes_read: {:?}", ssh_id.bytes_read);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::iter;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_ssh_id_openssh() {
@@ -238,8 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ssh_id_too_long() {
-        let data = String::from_iter(iter::once("SSH-2.0-").chain(
-            iter::repeat("A").take(500)));
+        let data = String::from_iter(iter::once("SSH-2.0-").chain(iter::repeat("A").take(500)));
         let mut read = SshRead::new(data.as_bytes());
 
         let received = read.read_ssh_id().await;

@@ -26,7 +26,7 @@ mod error {
     use std::fmt::Display;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use log::warn;
+    use tracing::warn;
 
     #[derive(Debug)]
     pub struct MemoryLockError {

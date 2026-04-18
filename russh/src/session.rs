@@ -18,11 +18,11 @@ use std::fmt::{Debug, Formatter};
 use std::mem::replace;
 use std::num::Wrapping;
 
-use bytes::Bytes;
 use byteorder::{BigEndian, ByteOrder};
-use log::{debug, trace};
+use bytes::Bytes;
 use ssh_encoding::Encode;
 use tokio::sync::oneshot;
+use tracing::{Span, debug};
 
 use crate::cipher::OpeningKey;
 use crate::client::GexParams;
@@ -77,6 +77,23 @@ pub(crate) struct CommonSession<Config> {
     pub strict_kex: bool,
     pub alive_timeouts: usize,
     pub received_data: bool,
+    // Counters surfaced on the `ssh.session` span for observability.
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub close_reason: Option<&'static str>,
+    // Captured at the top of `run()` so code that runs inside nested spans can
+    // still record fields on the `ssh.session` span without relying on
+    // `Span::current()` resolving to the right frame.
+    pub session_span: Span,
+    // Set when authentication begins, dropped when it finishes. Lets code in
+    // the auth path record user/method/outcome on a dedicated `ssh.auth` span.
+    pub auth_span: Option<Span>,
+    // Set on first KEXINIT, dropped on KexProgress::Done. Held across multiple
+    // packet callbacks so a single `ssh.kex` span covers the whole exchange.
+    pub kex_span: Option<Span>,
+    // Peer socket address, when the caller provided one (via `connect` /
+    // `run_on_socket`). `None` when a user-supplied stream gives no addr.
+    pub peer_addr: Option<std::net::SocketAddr>,
 }
 
 impl<C> Debug for CommonSession<C> {
@@ -127,6 +144,23 @@ impl ChannelFlushResult {
     }
 }
 
+fn record_negotiated_algorithms(span: &Span, names: &negotiation::Names) {
+    span.record("ssh.kex.algorithm", names.kex.as_ref())
+        .record("ssh.cipher", names.cipher.as_ref())
+        .record("ssh.mac.client_to_server", names.client_mac.as_ref())
+        .record("ssh.mac.server_to_client", names.server_mac.as_ref())
+        .record(
+            "ssh.compression.client_to_server",
+            names.client_compression.name(),
+        )
+        .record(
+            "ssh.compression.server_to_client",
+            names.server_compression.name(),
+        )
+        .record("ssh.hostkey.algorithm", names.key.to_string().as_str())
+        .record("ssh.strict_kex", names.strict_kex());
+}
+
 impl<C> CommonSession<C> {
     pub(crate) fn has_any_pending_data(&self) -> bool {
         self.encrypted
@@ -149,6 +183,7 @@ impl<C> CommonSession<C> {
     }
 
     pub fn newkeys(&mut self, newkeys: NewKeys) {
+        record_negotiated_algorithms(&self.session_span, &newkeys.names);
         if let Some(ref mut enc) = self.encrypted {
             enc.exchange = Some(newkeys.exchange);
             enc.kex = newkeys.kex;
@@ -168,6 +203,7 @@ impl<C> CommonSession<C> {
     }
 
     pub fn encrypted(&mut self, state: EncryptedState, newkeys: NewKeys) {
+        record_negotiated_algorithms(&self.session_span, &newkeys.names);
         let strict_kex = newkeys.names.strict_kex();
         self.encrypted = Some(Encrypted {
             exchange: Some(newkeys.exchange),
@@ -203,8 +239,7 @@ impl<C> CommonSession<C> {
                     .init_compress(self.packet_writer.compress());
             }
             if !enc.server_compression.is_deferred() {
-                enc.server_compression
-                    .init_decompress(&mut enc.decompress);
+                enc.server_compression.init_decompress(&mut enc.decompress);
             }
         }
     }
@@ -309,20 +344,12 @@ impl Encrypted {
         target: u32,
     ) -> Result<bool, crate::Error> {
         if let Some(channel) = self.channels.get_mut(&channel) {
-            trace!(
-                "adjust_window_size, channel = {}, size = {},",
-                channel.sender_channel, target
-            );
             // Ignore extra data.
             // https://tools.ietf.org/html/rfc4254#section-5.2
             if data.len() as u32 <= channel.sender_window_size {
                 channel.sender_window_size -= data.len() as u32;
             }
             if channel.sender_window_size < target / 2 {
-                debug!(
-                    "sender_window_size {:?}, target {:?}",
-                    channel.sender_window_size, target
-                );
                 push_packet!(self.write, {
                     self.write.push(msg::CHANNEL_WINDOW_ADJUST);
                     channel.recipient_channel.encode(&mut self.write)?;
@@ -515,18 +542,12 @@ impl Encrypted {
                     buf[..off].encode(write)?;
                 }),
             }
-            trace!(
-                "buffer: {:?} {:?}",
-                write.len(),
-                channel.recipient_window_size
-            );
             channel.recipient_window_size -= off as u32;
             #[allow(clippy::indexing_slicing)] // length checked
             {
                 buf = &buf[off..]
             }
         }
-        trace!("buf.len() = {:?}, buf_len = {:?}", buf.len(), buf_len);
         Ok(buf_len)
     }
 
@@ -607,7 +628,11 @@ impl Encrypted {
                 channel.pending_data.push_back((buf0, None, buf_len))
             }
         } else {
-            debug!("{channel:?} not saved for this session");
+            debug!(
+                event = "ssh.channel.unknown_id",
+                ssh.channel.id = ?channel,
+                "channel not registered on this session"
+            );
         }
         Ok(())
     }
@@ -711,12 +736,6 @@ impl Encrypted {
                 let len = BigEndian::read_u32(&self.write[self.write_cursor..]) as usize;
                 #[allow(clippy::indexing_slicing)]
                 let to_write = &self.write[(self.write_cursor + 4)..(self.write_cursor + 4 + len)];
-                trace!(
-                    "session_write_encrypted, msg type {:?}, len {}",
-                    to_write.first(),
-                    to_write.len()
-                );
-
                 writer.packet_raw(to_write)?;
                 self.write_cursor += 4 + len
             }
@@ -748,7 +767,12 @@ impl Encrypted {
         }
         ChannelId(self.last_channel_id.0)
     }
-    pub fn new_channel(&mut self, window_size: u32, maxpacket: u32) -> ChannelId {
+    pub fn new_channel(
+        &mut self,
+        window_size: u32,
+        maxpacket: u32,
+        channel_type: &'static str,
+    ) -> ChannelId {
         loop {
             self.last_channel_id += Wrapping(1);
             if let std::collections::hash_map::Entry::Vacant(vacant_entry) =
@@ -766,6 +790,7 @@ impl Encrypted {
                     pending_data: std::collections::VecDeque::new(),
                     pending_eof: false,
                     pending_close: false,
+                    channel_type,
                 });
                 return ChannelId(self.last_channel_id.0);
             }
@@ -887,6 +912,7 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            channel_type: "session",
         }
     }
 
@@ -941,6 +967,7 @@ mod tests {
             pending_data: VecDeque::from([(Bytes::from_static(b"hello"), None, 0)]),
             pending_eof,
             pending_close,
+            channel_type: "session",
         }
     }
 
@@ -1183,11 +1210,9 @@ mod tests {
         let mut staged = test_encrypted();
         let mut direct = test_encrypted();
         let mut staged_channel = test_channel(channel_id, 42, false, false);
-        staged_channel.pending_data =
-            VecDeque::from([(Bytes::from_static(b"hello"), Some(1), 0)]);
+        staged_channel.pending_data = VecDeque::from([(Bytes::from_static(b"hello"), Some(1), 0)]);
         let mut direct_channel = test_channel(channel_id, 42, false, false);
-        direct_channel.pending_data =
-            VecDeque::from([(Bytes::from_static(b"hello"), Some(1), 0)]);
+        direct_channel.pending_data = VecDeque::from([(Bytes::from_static(b"hello"), Some(1), 0)]);
         staged.channels.insert(channel_id, staged_channel);
         direct.channels.insert(channel_id, direct_channel);
 
@@ -1266,7 +1291,9 @@ mod tests {
         encrypted
             .flush_pending_with_writer(&mut writer, channel_id, false)
             .unwrap();
-        encrypted.flush(&Limits::default(), &mut writer, false).unwrap();
+        encrypted
+            .flush(&Limits::default(), &mut writer, false)
+            .unwrap();
 
         assert_eq!(
             clear_packet_types(&writer.buffer().buffer),
@@ -1289,11 +1316,15 @@ mod tests {
         encrypted
             .flush_pending_with_writer(&mut writer, channel_id, true)
             .unwrap();
-        encrypted.flush(&Limits::default(), &mut writer, true).unwrap();
+        encrypted
+            .flush(&Limits::default(), &mut writer, true)
+            .unwrap();
         assert!(clear_packet_types(&writer.buffer().buffer).is_empty());
 
         // ...and it all comes out, in order, once the kex is done.
-        encrypted.flush(&Limits::default(), &mut writer, false).unwrap();
+        encrypted
+            .flush(&Limits::default(), &mut writer, false)
+            .unwrap();
         assert_eq!(
             clear_packet_types(&writer.buffer().buffer),
             vec![msg::CHANNEL_DATA, msg::CHANNEL_EOF, msg::CHANNEL_CLOSE]
@@ -1324,10 +1355,7 @@ mod tests {
             .data_with_writer(&mut direct_writer, channel_id, payload, false)
             .unwrap();
 
-        assert_eq!(
-            direct_writer.buffer().buffer,
-            staged_writer.buffer().buffer
-        );
+        assert_eq!(direct_writer.buffer().buffer, staged_writer.buffer().buffer);
         assert_eq!(
             direct.channels[&channel_id].recipient_window_size,
             staged.channels[&channel_id].recipient_window_size
@@ -1361,10 +1389,7 @@ mod tests {
             .extended_data_with_writer(&mut direct_writer, channel_id, 1, payload, false)
             .unwrap();
 
-        assert_eq!(
-            direct_writer.buffer().buffer,
-            staged_writer.buffer().buffer
-        );
+        assert_eq!(direct_writer.buffer().buffer, staged_writer.buffer().buffer);
         assert_eq!(
             direct.channels[&channel_id].recipient_window_size,
             staged.channels[&channel_id].recipient_window_size
@@ -1392,7 +1417,9 @@ mod tests {
             vec![msg::REQUEST_SUCCESS, msg::CHANNEL_DATA]
         );
 
-        encrypted.flush(&Limits::default(), &mut writer, false).unwrap();
+        encrypted
+            .flush(&Limits::default(), &mut writer, false)
+            .unwrap();
         assert_eq!(
             clear_packet_types(&writer.buffer().buffer),
             vec![msg::REQUEST_SUCCESS, msg::CHANNEL_DATA]
@@ -1502,7 +1529,10 @@ mod tests {
             .unwrap();
 
         let channel = &encrypted.channels[&channel_id];
-        assert_eq!(clear_packet_types(&writer.buffer().buffer), vec![msg::CHANNEL_DATA]);
+        assert_eq!(
+            clear_packet_types(&writer.buffer().buffer),
+            vec![msg::CHANNEL_DATA]
+        );
         assert_eq!(channel.recipient_window_size, 0);
         assert_eq!(channel.pending_data.len(), 1);
         let pending = channel.pending_data.back().unwrap();

@@ -84,7 +84,9 @@ async fn connect_with_cert(
 
 #[tokio::test]
 async fn test_server_certificate_auth() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let ca_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let now = SystemTime::now()
@@ -111,7 +113,9 @@ async fn test_server_certificate_auth() {
 
 #[tokio::test]
 async fn test_server_wrong_ca_certificate_auth() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let ca_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let evil_ca_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
@@ -140,7 +144,9 @@ async fn test_server_wrong_ca_certificate_auth() {
 
 #[tokio::test]
 async fn test_server_rsa_sha2_512_certificate_auth() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let rsa = Algorithm::Rsa {
         hash: Some(HashAlg::Sha512),
@@ -163,7 +169,9 @@ async fn test_server_rsa_sha2_512_certificate_auth() {
 
 #[tokio::test]
 async fn test_server_infinite_validity_certificate_auth() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let ca_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
 
@@ -193,7 +201,9 @@ async fn test_server_infinite_validity_certificate_auth() {
 /// still works.
 #[tokio::test]
 async fn test_server_stale_certificate_is_skipped() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let ca_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
     let stale_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();

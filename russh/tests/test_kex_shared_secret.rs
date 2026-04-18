@@ -15,7 +15,9 @@ use ssh_key::PrivateKey;
 /// Test that kex_done callback is invoked with shared secret
 #[tokio::test]
 async fn test_kex_done_callback_receives_shared_secret() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 
@@ -105,7 +107,9 @@ async fn test_kex_done_callback_receives_shared_secret() {
 /// Test kex_done with different KEX algorithms
 #[tokio::test]
 async fn test_kex_done_with_ecdh_nistp256() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 
@@ -188,7 +192,9 @@ async fn test_kex_done_with_ecdh_nistp256() {
 
 #[tokio::test]
 async fn test_kex_done_with_dh_gex_sha256_and_rfc4419_minimum() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 
@@ -260,7 +266,9 @@ async fn test_kex_done_with_dh_gex_sha256_and_rfc4419_minimum() {
 /// Test that kex_done is called on rekey
 #[tokio::test]
 async fn test_kex_done_on_rekey() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 

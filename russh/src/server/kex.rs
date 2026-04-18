@@ -2,7 +2,7 @@ use core::fmt;
 use std::cell::RefCell;
 
 use client::GexParams;
-use log::debug;
+use tracing::debug;
 use num_bigint::BigUint;
 use ssh_encoding::Encode;
 use ssh_key::Algorithm;
@@ -133,7 +133,6 @@ impl ServerKex {
                         &self.cause,
                     )?
                 };
-                debug!("negotiated: {names:?}");
 
                 // seqno has already been incremented after read()
                 if names.strict_kex() && !self.cause.is_rekey() && input.seqn.0 != 1 {
@@ -333,7 +332,6 @@ impl ServerKex {
                 })?;
 
                 // Hash signature
-                debug!("signing with key {key:?}");
                 let signature = sign_with_hash_alg(
                     &PrivateKeyWithHashAlg::new(Arc::new(key.clone()), signature_hash_alg),
                     &hash,
@@ -394,7 +392,6 @@ impl ServerKex {
                 let r = &input.buffer[1..];
                 ensure_end(&r)?;
 
-                debug!("new keys received");
                 Ok(KexProgress::Done {
                     server_host_certificate: None,
                     newkeys,

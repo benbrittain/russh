@@ -13,7 +13,9 @@ use ssh_key::PrivateKey;
 
 #[tokio::test]
 async fn test_rekey_with_strict_kex() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     // Generate keys
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();

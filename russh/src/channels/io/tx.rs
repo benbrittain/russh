@@ -52,6 +52,16 @@ pub struct ChannelTx<S> {
     window_size_notication: WatchNotification,
     max_packet_size: u32,
     ext: Option<u32>,
+    // Spans held open while writes are blocked on remote window capacity.
+    window_blocked_span: Option<(std::time::Instant, tracing::Span)>,
+    // Same, but for tokio mpsc backpressure — the session task hasn't drained
+    // the channel fast enough.
+    mpsc_blocked_span: Option<(std::time::Instant, tracing::Span)>,
+    // Per-channel `ssh.channel` span, created on the session task so the
+    // parent is the owning `ssh.session`. Writes run on the caller's task;
+    // we re-enter the span when emitting backpressure events so they stay
+    // correlated with the channel (and session) regardless of caller context.
+    channel_span: tracing::Span,
 }
 
 impl<S> ChannelTx<S>
@@ -65,6 +75,7 @@ where
         window_size_notification: Arc<Notify>,
         max_packet_size: u32,
         ext: Option<u32>,
+        channel_span: tracing::Span,
     ) -> Self {
         Self {
             sender,
@@ -76,6 +87,9 @@ where
             window_size_fut: None,
             max_packet_size,
             ext,
+            window_blocked_span: None,
+            mpsc_blocked_span: None,
+            channel_span,
         }
     }
 
@@ -91,6 +105,10 @@ where
 
         match NonZeroUsize::try_from(writable) {
             Ok(w) => {
+                if let Some((since, span)) = self.window_blocked_span.take() {
+                    let blocked_us = since.elapsed().as_micros() as u64;
+                    span.record("blocked_us", blocked_us);
+                }
                 *window_size -= writable as u32;
                 if *window_size > 0 {
                     self.notify.notify_one();
@@ -98,6 +116,20 @@ where
                 Poll::Ready(w)
             }
             Err(_) => {
+                if self.window_blocked_span.is_none() {
+                    let id = self.id;
+                    let max_packet_size = self.max_packet_size;
+                    let span = tracing::info_span!(
+                        parent: &self.channel_span,
+                        "ssh.channel.window_blocked",
+                        otel.kind = "internal",
+                        ssh.channel.id = %u32::from(id),
+                        ssh.channel.blocked_by = "remote_window",
+                        ssh.channel.max_packet_size = max_packet_size,
+                        blocked_us = tracing::field::Empty,
+                    );
+                    self.window_blocked_span = Some((std::time::Instant::now(), span));
+                }
                 drop(window_size);
                 ready!(self.window_size_notication.poll_unpin(cx));
                 self.window_size_notication = WatchNotification::new(Arc::clone(&self.notify));
@@ -172,8 +204,33 @@ where
             let (msg, writable) = ready!(self.poll_mk_msg(cx, buf));
             self.activate(msg, writable.into())
         };
-        let r = ready!(send_fut.as_mut().poll_unpin(cx));
-        Poll::Ready(self.handle_write_result(r))
+        let poll_result = send_fut.as_mut().poll_unpin(cx);
+        match poll_result {
+            Poll::Pending => {
+                if self.mpsc_blocked_span.is_none() {
+                    let id = self.id;
+                    let capacity = self.sender.capacity();
+                    let span = tracing::info_span!(
+                        parent: &self.channel_span,
+                        "ssh.channel.mpsc_blocked",
+                        otel.kind = "internal",
+                        ssh.channel.id = %u32::from(id),
+                        ssh.channel.blocked_by = "session_mpsc",
+                        ssh.channel.mpsc.capacity = capacity,
+                        blocked_us = tracing::field::Empty,
+                    );
+                    self.mpsc_blocked_span = Some((std::time::Instant::now(), span));
+                }
+                Poll::Pending
+            }
+            Poll::Ready(r) => {
+                if let Some((since, span)) = self.mpsc_blocked_span.take() {
+                    let blocked_us = since.elapsed().as_micros() as u64;
+                    span.record("blocked_us", blocked_us);
+                }
+                Poll::Ready(self.handle_write_result(r))
+            }
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {

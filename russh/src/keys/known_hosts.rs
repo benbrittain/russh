@@ -1,13 +1,14 @@
 use std::borrow::Cow;
+use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::env;
 
 use data_encoding::BASE64_MIME;
 use hmac::{Hmac, KeyInit, Mac};
-use log::debug;
 use sha1::Sha1;
+use tracing::field::Empty;
+use tracing::{Span, instrument};
 
 use crate::keys::Error;
 
@@ -21,6 +22,15 @@ pub fn check_known_hosts(
 }
 
 /// Check that a server key matches the one recorded in file `path`.
+#[instrument(
+    level = "info",
+    name = "ssh.hostkey.verify",
+    skip(pubkey, path),
+    fields(
+        ssh.hostkey.algorithm = %pubkey.algorithm(),
+        ssh.hostkey.match = Empty,
+    )
+)]
 pub fn check_known_hosts_path<P: AsRef<Path>>(
     host: &str,
     port: u16,
@@ -40,12 +50,17 @@ pub fn check_known_hosts_path<P: AsRef<Path>>(
             }
         })
         // If any Err was returned, we stop here
-        .collect::<Result<Vec<bool>, Error>>()?
-        .into_iter()
-        // Now we check the results for a match
-        .any(|x| x);
+        .collect::<Result<Vec<bool>, Error>>();
 
-    Ok(check)
+    let outcome = match &check {
+        Ok(results) if results.iter().any(|x| *x) => "known",
+        Ok(_) => "unknown",
+        Err(Error::KeyChanged { .. }) => "changed",
+        Err(_) => "error",
+    };
+    Span::current().record("ssh.hostkey.match", outcome);
+
+    Ok(check?.into_iter().any(|x| x))
 }
 
 fn known_hosts_path() -> Result<PathBuf, Error> {
@@ -79,7 +94,6 @@ pub fn known_host_keys_path<P: AsRef<Path>>(
     } else {
         Cow::Owned(format!("[{host}]:{port}"))
     };
-    debug!("host_port = {host_port:?}");
     let mut line = 1;
     let mut matches = vec![];
     while f.read_line(&mut buffer)? > 0 {
@@ -88,16 +102,14 @@ pub fn known_host_keys_path<P: AsRef<Path>>(
                 buffer.clear();
                 continue;
             }
-            debug!("line = {buffer:?}");
             let mut s = buffer.split(' ');
             let hosts = s.next();
             let _ = s.next();
             let key = s.next();
-            if let (Some(h), Some(k)) = (hosts, key) {
-                debug!("{h:?} {k:?}");
-                if match_hostname(&host_port, h) {
-                    matches.push((line, parse_public_key_base64(k)?));
-                }
+            if let (Some(h), Some(k)) = (hosts, key)
+                && match_hostname(&host_port, h)
+            {
+                matches.push((line, parse_public_key_base64(k)?));
             }
         }
         buffer.clear();
@@ -182,7 +194,9 @@ mod test {
 
     #[test]
     fn test_check_known_hosts() {
-        env_logger::try_init().unwrap_or(());
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         {

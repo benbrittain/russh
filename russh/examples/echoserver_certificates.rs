@@ -30,8 +30,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Debug)
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .init();
 
     let args = Cli::parse();

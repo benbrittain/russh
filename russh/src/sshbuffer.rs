@@ -18,12 +18,11 @@ use std::borrow::Cow;
 use std::num::Wrapping;
 
 use bytes::{Bytes, BytesMut};
-use log::debug;
-use ssh_encoding::Writer;
-use super::cipher::SealingKey;
 use compression::Compress;
+use ssh_encoding::Writer;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+use super::cipher::SealingKey;
 use super::*;
 
 /// The SSH client/server identification string.
@@ -428,10 +427,6 @@ impl PacketWriter {
                     return Ok(());
                 }
 
-                if let Some(message_type) = self.write_buffer.buffer.get(payload_start) {
-                    debug!("> msg type {message_type:?}, len {payload_len}");
-                }
-
                 self.cipher
                     .finish_packet(offset, payload_len, &mut self.write_buffer);
                 Ok(())
@@ -470,8 +465,7 @@ impl PacketWriter {
     }
 
     pub fn packet_raw(&mut self, buf: &[u8]) -> Result<(), Error> {
-        if let Some(message_type) = buf.first() {
-            debug!("> msg type {message_type:?}, len {}", buf.len());
+        if !buf.is_empty() {
             if matches!(&self.compress, Compress::None) {
                 self.cipher.write(buf, &mut self.write_buffer);
             } else {
@@ -515,7 +509,8 @@ impl PacketWriter {
         // Reserving a small fixed margin avoids repeated output-buffer growth
         // without coupling callers to individual cipher padding formulas.
         let per_packet_margin = Self::PACKET_PREFIX_LEN + self.cipher.tag_len() + 32;
-        let additional = payload_bytes.saturating_add(packet_count.saturating_mul(per_packet_margin));
+        let additional =
+            payload_bytes.saturating_add(packet_count.saturating_mul(per_packet_margin));
         self.write_buffer.buffer.reserve(additional);
     }
 
@@ -563,12 +558,23 @@ impl PacketWriter {
         self.write_buffer.seqn = Wrapping(0);
     }
 
-    pub async fn flush_into<W: AsyncWrite + Unpin>(&mut self, w: &mut W) -> std::io::Result<()> {
-        if !self.write_buffer.buffer.is_empty() {
-            w.write_all(&self.write_buffer.buffer).await?;
-            w.flush().await?;
-            self.write_buffer.buffer.clear();
+    pub async fn flush_into<W: AsyncWrite + Unpin>(&mut self, w: &mut W) -> std::io::Result<usize> {
+        if self.write_buffer.buffer.is_empty() {
+            return Ok(0);
         }
-        Ok(())
+        let bytes = self.write_buffer.buffer.len();
+        let start = std::time::Instant::now();
+        w.write_all(&self.write_buffer.buffer).await?;
+        w.flush().await?;
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        self.write_buffer.buffer.clear();
+        tracing::event!(
+            target: "russh::flush",
+            tracing::Level::DEBUG,
+            event = "flush",
+            bytes,
+            elapsed_us,
+        );
+        Ok(bytes)
     }
 }

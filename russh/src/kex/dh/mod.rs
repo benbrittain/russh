@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use byteorder::{BigEndian, ByteOrder};
 use digest::Digest;
 use groups::DH;
-use log::{error, trace};
+use tracing::{error, trace};
 use num_bigint::BigUint;
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};

@@ -19,7 +19,9 @@ static THREADS: usize = 16;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_contention() -> Result<(), anyhow::Error> {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     let ssh_addr = addr().await;
     let tcp_addr = addr().await;

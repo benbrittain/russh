@@ -16,7 +16,9 @@ const HANDLE_DATA_COUNT: usize = 64;
 
 #[tokio::test]
 async fn test_backpressure() -> Result<(), anyhow::Error> {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     let addr = addr();
     let data = data();

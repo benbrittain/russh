@@ -12,8 +12,8 @@ mod compress {
     use std::sync::{Arc, Mutex};
 
     use keys::PrivateKeyWithHashAlg;
-    use log::debug;
     use ssh_key::PrivateKey;
+    use tracing::debug;
 
     use super::server::{Server as _, Session};
     use super::*;
@@ -25,7 +25,9 @@ mod compress {
 
     #[tokio::test]
     async fn compress_local_test() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
 
         let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
         let mut config = server::Config::default();
@@ -177,9 +179,8 @@ mod channels {
     use ssh_key::PrivateKey;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    use crate::cert::PublicKeyOrCertificate;
-
     use super::*;
+    use crate::cert::PublicKeyOrCertificate;
 
     async fn test_session<RC, RS, CH, SH, F1, F2>(
         client_handler: CH,
@@ -198,7 +199,9 @@ mod channels {
 
         use crate::*;
 
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
 
         let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
         let mut config = server::Config::default();
@@ -779,7 +782,9 @@ mod channels {
         )
         .await;
 
-        received.try_recv().expect("server never saw the pty request")
+        received
+            .try_recv()
+            .expect("server never saw the pty request")
     }
 }
 
@@ -813,7 +818,9 @@ mod server_kex_junk {
 
     #[tokio::test]
     async fn server_kex_junk_test() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
 
         let config = server::Config::default();
         let config = Arc::new(config);
@@ -940,9 +947,7 @@ pub(crate) mod raw_no_crypto {
             Self::connect_without_kex_with_config(no_crypto_server_config()).await
         }
 
-        pub(crate) async fn connect_without_kex_with_config(
-            config: Arc<server::Config>,
-        ) -> Self {
+        pub(crate) async fn connect_without_kex_with_config(config: Arc<server::Config>) -> Self {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let events = Arc::new(Mutex::new(Vec::new()));
@@ -1068,8 +1073,8 @@ pub(crate) mod raw_no_crypto {
     }
 
     async fn ignore_during_initial_kex(kex_names: &[&str]) -> ServerSignal {
-        let mut session = RawSession::connect_without_kex_with_config(strict_kex_server_config())
-            .await;
+        let mut session =
+            RawSession::connect_without_kex_with_config(strict_kex_server_config()).await;
         session
             .send_packet(&real_kexinit_payload(kex_names))
             .await
@@ -1505,7 +1510,9 @@ mod future_certificate {
 
     #[tokio::test]
     async fn test_future_certificate_auth_full_flow() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
 
         // 1. Spawn ssh-agent
         let (mut agent, agent_path, dir) = spawn_agent().await;
@@ -1722,7 +1729,9 @@ mod rekey_under_load {
     /// handled across each rekey with nothing lost or misordered.
     #[tokio::test]
     async fn client_traffic_in_flight_during_server_rekey_survives() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
 
         let mut config = server::Config::default();
         config.inactivity_timeout = None;
@@ -1737,7 +1746,10 @@ mod rekey_under_load {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (socket, _) = listener.accept().await.unwrap();
-            server::run_stream(config, socket, Echo).await.unwrap().await
+            server::run_stream(config, socket, Echo)
+                .await
+                .unwrap()
+                .await
         });
 
         let key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();

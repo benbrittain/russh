@@ -16,8 +16,9 @@ impl<E: Encode> EncodedExt for E {
 }
 
 mod limited_string {
-    use super::*;
     use std::ops::Deref;
+
+    use super::*;
 
     pub struct LimitedString<const N: usize>(String);
 
@@ -213,7 +214,7 @@ pub fn sign_with_hash_alg(key: &PrivateKeyWithHashAlg, data: &[u8]) -> ssh_key::
         // See https://github.com/Eugeny/russh/issues/758.
         #[cfg(not(feature = "rsa"))]
         ssh_key::private::KeypairData::Rsa(_) => {
-            log::error!(
+            tracing::error!(
                 "cannot sign with an RSA key: russh was built without the `rsa` \
                  feature (enable it, e.g. `features = [\"rsa\"]`)"
             );
@@ -270,7 +271,11 @@ pub use algorithm::AlgorithmExt;
 
 use crate::keys::key::PrivateKeyWithHashAlg;
 
-#[cfg(all(test, not(feature = "rsa"), any(feature = "ring", feature = "aws-lc-rs")))]
+#[cfg(all(
+    test,
+    not(feature = "rsa"),
+    any(feature = "ring", feature = "aws-lc-rs")
+))]
 mod tests {
     use std::sync::Arc;
 
@@ -294,7 +299,10 @@ mod tests {
         // `Rsa { hash: None }` the bare signer would report.
         match sign_with_hash_alg(&key, b"payload") {
             Err(ssh_key::Error::AlgorithmUnsupported {
-                algorithm: ssh_key::Algorithm::Rsa { hash: Some(HashAlg::Sha512) },
+                algorithm:
+                    ssh_key::Algorithm::Rsa {
+                        hash: Some(HashAlg::Sha512),
+                    },
             }) => {}
             other => panic!("expected AlgorithmUnsupported naming rsa-sha2-512, got {other:?}"),
         }

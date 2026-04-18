@@ -15,22 +15,23 @@
 use std::borrow::Cow;
 
 use bytes::Bytes;
-use log::debug;
 use rand_core::Rng;
 use ssh_encoding::{Decode, Encode};
 use ssh_key::{Algorithm, Certificate, EcdsaCurve, HashAlg, PrivateKey};
+use tracing::field::Empty;
+use tracing::info_span;
 
 use crate::cipher::CIPHERS;
 use crate::helpers::{AlgorithmExt, NameList};
 use crate::kex::{
-    KexCause, EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT, EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER,
+    EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT, EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER, KexCause,
 };
 use crate::keys::key::safe_rng;
 use crate::parsing::ensure_end;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::server::Config;
 use crate::sshbuffer::PacketWriter;
-use crate::{cipher, compression, kex, mac, msg, AlgorithmKind, Error};
+use crate::{AlgorithmKind, Error, cipher, compression, kex, mac, msg};
 
 #[cfg(target_arch = "wasm32")]
 /// WASM-only stub
@@ -121,7 +122,7 @@ pub(crate) fn server_certificate_names(
             .iter()
             .any(|k| k.public_key().key_data() == cert.public_key())
         {
-            debug!("no host key matching certificate {:?}", cert.key_id());
+            tracing::debug!("no host key matching certificate {:?}", cert.key_id());
             continue;
         }
         let variants: Vec<Algorithm> = pref
@@ -268,6 +269,21 @@ pub(crate) trait Select {
         available_certificates: Option<&[Certificate]>,
         cause: &KexCause,
     ) -> Result<Names, Error> {
+        let span = info_span!(
+            "ssh.algorithm_negotiation",
+            role = if Self::is_server() { "server" } else { "client" },
+            ssh.kex.algorithm = Empty,
+            ssh.cipher = Empty,
+            ssh.mac.client_to_server = Empty,
+            ssh.mac.server_to_client = Empty,
+            ssh.compression.client_to_server = Empty,
+            ssh.compression.server_to_client = Empty,
+            ssh.hostkey.algorithm = Empty,
+            ssh.strict_kex = Empty,
+            ssh.kex.cause = ?cause,
+        );
+        let _enter = span.enter();
+
         let &Some(mut r) = &buffer.get(17..) else {
             return Err(Error::Inconsistent);
         };
@@ -319,9 +335,7 @@ pub(crate) trait Select {
         )
         .is_ok();
 
-        if strict_kex_requested && strict_kex_provided {
-            debug!("strict kex enabled")
-        }
+        let strict_kex_enabled = strict_kex_requested && strict_kex_provided;
 
         // Host key
 
@@ -435,7 +449,7 @@ pub(crate) trait Select {
         let follows = u8::decode(&mut r)? != 0;
         u32::decode(&mut r)?;
         ensure_end(&r)?;
-        Ok(Names {
+        let names = Names {
             kex: kex_algorithm,
             key: key_algorithm,
             cipher,
@@ -446,8 +460,24 @@ pub(crate) trait Select {
             host_key_is_certificate,
             // Ignore the next packet if (1) it follows and (2) it's not the correct guess.
             ignore_guessed: follows && !(kex_both_first && key_both_first),
-            strict_kex: (strict_kex_requested && strict_kex_provided) || cause.is_strict_rekey(),
-        })
+            strict_kex: strict_kex_enabled || cause.is_strict_rekey(),
+        };
+
+        span.record("ssh.kex.algorithm", names.kex.as_ref())
+            .record("ssh.cipher", names.cipher.as_ref())
+            .record("ssh.mac.client_to_server", names.client_mac.as_ref())
+            .record("ssh.mac.server_to_client", names.server_mac.as_ref())
+            .record(
+                "ssh.compression.client_to_server",
+                names.client_compression.name(),
+            )
+            .record(
+                "ssh.compression.server_to_client",
+                names.server_compression.name(),
+            )
+            .record("ssh.hostkey.algorithm", names.key.to_string().as_str())
+            .record("ssh.strict_kex", names.strict_kex);
+        Ok(names)
     }
 }
 
@@ -709,8 +739,8 @@ mod tests {
             ],
             true,
         );
-        let names = Server::read_kex(&buf, &Preferred::DEFAULT, None,
-            None, &KexCause::Initial).unwrap();
+        let names =
+            Server::read_kex(&buf, &Preferred::DEFAULT, None, None, &KexCause::Initial).unwrap();
         assert_eq!(names.kex, kex::MLKEM768X25519_SHA256);
         assert!(names.ignore_guessed, "wrong guess must be ignored");
     }
@@ -719,8 +749,8 @@ mod tests {
     #[test]
     fn correct_guess_is_not_ignored() {
         let buf = build_kexinit(&["mlkem768x25519-sha256", "curve25519-sha256"], true);
-        let names = Server::read_kex(&buf, &Preferred::DEFAULT, None,
-            None, &KexCause::Initial).unwrap();
+        let names =
+            Server::read_kex(&buf, &Preferred::DEFAULT, None, None, &KexCause::Initial).unwrap();
         assert!(!names.ignore_guessed, "correct guess must be honored");
     }
 
@@ -778,8 +808,8 @@ mod tests {
     #[test]
     fn certificate_ignored_when_not_advertised() {
         let buf = build_kexinit_keys(KEX_FIRST, &[ED25519_CERT, "ssh-ed25519"], false);
-        let names = Client::read_kex(&buf, &Preferred::DEFAULT, None,
-            None, &KexCause::Initial).unwrap();
+        let names =
+            Client::read_kex(&buf, &Preferred::DEFAULT, None, None, &KexCause::Initial).unwrap();
         assert!(!names.host_key_is_certificate);
         assert_eq!(names.key, Algorithm::Ed25519);
     }
@@ -972,8 +1002,7 @@ mod tests {
     #[test]
     fn rsa_certificate_variants_follow_preferences() {
         let ca = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
-        let rsa_key =
-            PrivateKey::random(&mut rand::rng(), Algorithm::Rsa { hash: None }).unwrap();
+        let rsa_key = PrivateKey::random(&mut rand::rng(), Algorithm::Rsa { hash: None }).unwrap();
         let cert = host_cert(&rsa_key, &ca);
         let keys = vec![rsa_key];
 

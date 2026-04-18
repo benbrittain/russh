@@ -7,7 +7,7 @@ use elliptic_curve::ecdh::{EphemeralSecret, SharedSecret};
 use elliptic_curve::point::PointCompression;
 use elliptic_curve::sec1::{FromSec1Point, ModulusSize, ToSec1Point};
 use elliptic_curve::{AffinePoint, Curve, CurveArithmetic, FieldBytesSize};
-use log::debug;
+use tracing::debug;
 use p256::NistP256;
 use p384::NistP384;
 use p521::NistP521;

@@ -29,7 +29,7 @@ use byteorder::{BigEndian, ByteOrder};
 use block::CtrWrapper;
 use ctr::Ctr128BE;
 use delegate::delegate;
-use log::trace;
+use tracing::trace;
 #[cfg(all(not(feature = "aws-lc-rs"), feature = "ring"))]
 use ring::aead::{AES_128_GCM as ALGORITHM_AES_128_GCM, AES_256_GCM as ALGORITHM_AES_256_GCM};
 use ssh_encoding::Encode;

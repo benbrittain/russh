@@ -4,12 +4,12 @@ use std::future::{Future, Pending};
 use std::pin::Pin;
 
 use futures::future::Either as EitherFuture;
-use log::{debug, warn};
 use parsing::ChannelOpenConfirmation;
 pub use russh_cryptovec::CryptoVec;
 use ssh_encoding::{Decode, Encode};
 use thiserror::Error;
 use tokio::io::AsyncWrite;
+use tracing::warn;
 
 #[cfg(test)]
 mod tests;
@@ -512,10 +512,14 @@ pub(crate) struct ChannelParams {
     pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
     pending_eof: bool,
     pending_close: bool,
+    /// Channel-type string ("session", "direct-tcpip", ...) captured at open
+    /// time so the confirmation handler can tag the `ssh.channel` span.
+    pub channel_type: &'static str,
 }
 
 impl ChannelParams {
     pub fn confirm(&mut self, c: &ChannelOpenConfirmation) {
+        debug_assert_eq!(self.sender_channel.0, c.recipient_channel);
         self.recipient_channel = c.sender_channel; // "sender" is the sender of the confirmation
         self.recipient_window_size = c.initial_window_size;
         self.recipient_maximum_packet_size = c.maximum_packet_size;
@@ -534,11 +538,11 @@ pub(crate) async fn flush_or_timeout<W: AsyncWrite + Unpin>(
     writer: &mut sshbuffer::PacketWriter,
     stream: &mut W,
     inactivity_timer: Pin<&mut impl Future<Output = ()>>,
-) -> Result<(), Error> {
+) -> Result<usize, Error> {
     tokio::select! {
         r = writer.flush_into(stream) => Ok(r?),
         _ = inactivity_timer => {
-            debug!("timeout while writing");
+            tracing::debug!("timeout while writing");
             Err(Error::InactivityTimeout)
         }
     }

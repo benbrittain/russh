@@ -1,18 +1,14 @@
 use byteorder::{BigEndian, ByteOrder};
 use curve25519_dalek::montgomery::MontgomeryPoint;
-use log::debug;
-use ml_kem::Kem;
-use ml_kem::{
-    kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey},
-    KeyExport, MlKem768, TryKeyInit,
-};
+use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey};
+use ml_kem::{Kem, KeyExport, MlKem768, TryKeyInit};
 use sha2::Digest;
 use ssh_encoding::{Encode, Writer};
+use tracing::debug;
 
-use super::{compute_keys, KexAlgorithm, KexAlgorithmImplementor, KexType, SharedSecret};
-use crate::mac;
+use super::{KexAlgorithm, KexAlgorithmImplementor, KexType, SharedSecret, compute_keys};
 use crate::session::Exchange;
-use crate::{cipher, msg, CryptoVec, Error};
+use crate::{CryptoVec, Error, cipher, mac, msg};
 
 const MLKEM768_PUBLIC_KEY_SIZE: usize = 1184;
 const MLKEM768_CIPHERTEXT_SIZE: usize = 1088;
@@ -248,8 +244,9 @@ impl KexAlgorithmImplementor for MlKem768X25519Kex {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ssh_encoding::Encode;
+
+    use super::*;
 
     #[test]
     fn test_mlkem768x25519_key_exchange() {

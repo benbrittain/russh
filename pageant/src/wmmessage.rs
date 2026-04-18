@@ -6,8 +6,8 @@ use std::task::{Context, Poll};
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use delegate::delegate;
-use log::debug;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+use tracing::debug;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, INVALID_HANDLE_VALUE, LPARAM, WPARAM};
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::Memory::{
