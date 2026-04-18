@@ -11,7 +11,7 @@ rust-version = "1.85"
 
 [dependencies]
 ssh-encoding = { workspace = true, optional = true }
-log.workspace = true
+tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["mman"] }

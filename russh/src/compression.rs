@@ -12,6 +12,18 @@ pub enum Compression {
     ZlibOpenSSH,
 }
 
+impl Compression {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Compression::None => NONE.as_ref(),
+            #[cfg(feature = "flate2")]
+            Compression::Zlib => ZLIB.as_ref(),
+            #[cfg(feature = "flate2")]
+            Compression::ZlibOpenSSH => ZLIB_LEGACY.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Compress {
     None,

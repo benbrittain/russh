@@ -14,7 +14,9 @@ const STDERR_EXTENDED_DATA_TYPE: u32 = 1;
 
 #[tokio::test]
 async fn test_aes256_gcm_allows_full_256k_channel_packet() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 

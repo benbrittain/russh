@@ -3,7 +3,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use log::debug;
+    use tracing::debug;
     use ssh_key::PrivateKey;
     use tokio::net::TcpListener;
 
@@ -79,7 +79,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_connects_to_protocol_1_99() {
-        let _ = env_logger::try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).try_init();
 
         // Create a client key
         let client_key = PrivateKey::random(&mut rng(), ssh_key::Algorithm::Ed25519).unwrap();

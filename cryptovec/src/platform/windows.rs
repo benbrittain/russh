@@ -154,7 +154,7 @@ fn lock_page(
     }
 
     // Working set too small -- grow it and retry.
-    log::debug!("VirtualLock failed with ERROR_WORKING_SET_QUOTA, growing working set");
+    tracing::debug!("VirtualLock failed with ERROR_WORKING_SET_QUOTA, growing working set");
     grow_working_set(page_size).map_err(|e| {
         MemoryLockError::new(format!(
             "VirtualLock failed: ERROR_WORKING_SET_QUOTA (0x{err:x}), working set growth also failed: {e}"
@@ -217,7 +217,7 @@ fn grow_working_set(page_size: usize) -> Result<(), MemoryLockError> {
     let new_max = max_ws.max(new_min.saturating_add(page_size));
     let safe_flags = flags & KNOWN_WS_FLAGS;
 
-    log::debug!(
+    tracing::debug!(
         "growing process working set: min {min_ws} -> {new_min}, max {max_ws} -> {new_max}"
     );
 

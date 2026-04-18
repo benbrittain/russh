@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use log::debug;
 use russh::keys::*;
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::*;
+use tracing::debug;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
     let mut config = russh::server::Config::default();
     config.auth_rejection_time = std::time::Duration::from_secs(3);
     config.keys.push(

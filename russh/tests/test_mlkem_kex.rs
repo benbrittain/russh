@@ -12,7 +12,9 @@ use ssh_key::PrivateKey;
 
 #[tokio::test]
 async fn test_mlkem768x25519_handshake() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 
@@ -86,7 +88,9 @@ async fn test_mlkem768x25519_handshake() {
 
 #[tokio::test]
 async fn test_mlkem768x25519_with_fallback() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 
@@ -160,7 +164,9 @@ async fn test_mlkem768x25519_with_fallback() {
 
 #[tokio::test]
 async fn test_mlkem768x25519_rekey() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 
@@ -244,7 +250,9 @@ async fn test_mlkem768x25519_rekey() {
 
 #[tokio::test]
 async fn test_mlkem768x25519_multiple_channels() {
-    let _ = env_logger::try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
 
     let client_key = PrivateKey::random(&mut rand::rng(), ssh_key::Algorithm::Ed25519).unwrap();
 

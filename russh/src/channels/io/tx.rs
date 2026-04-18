@@ -52,6 +52,17 @@ pub struct ChannelTx<S> {
     window_size_notication: WatchNotification,
     max_packet_size: u32,
     ext: Option<u32>,
+    // When the remote window is exhausted, we stash the time at which we first
+    // observed the block so the unblock event can report how long the stall was.
+    window_blocked_since: Option<std::time::Instant>,
+    // Same, but for tokio mpsc backpressure — the session task hasn't drained
+    // the channel fast enough.
+    mpsc_blocked_since: Option<std::time::Instant>,
+    // Per-channel `ssh.channel` span, created on the session task so the
+    // parent is the owning `ssh.session`. Writes run on the caller's task;
+    // we re-enter the span when emitting backpressure events so they stay
+    // correlated with the channel (and session) regardless of caller context.
+    channel_span: tracing::Span,
 }
 
 impl<S> ChannelTx<S>
@@ -65,6 +76,7 @@ where
         window_size_notification: Arc<Notify>,
         max_packet_size: u32,
         ext: Option<u32>,
+        channel_span: tracing::Span,
     ) -> Self {
         Self {
             sender,
@@ -76,6 +88,9 @@ where
             window_size_fut: None,
             max_packet_size,
             ext,
+            window_blocked_since: None,
+            mpsc_blocked_since: None,
+            channel_span,
         }
     }
 
@@ -91,6 +106,19 @@ where
 
         match NonZeroUsize::try_from(writable) {
             Ok(w) => {
+                if let Some(since) = self.window_blocked_since.take() {
+                    let id = self.id;
+                    let blocked_us = since.elapsed().as_micros() as u64;
+                    self.channel_span.in_scope(|| {
+                        tracing::info!(
+                            target: "russh::backpressure",
+                            event = "ssh.channel.window_unblocked",
+                            channel_id = ?id,
+                            blocked_us,
+                            "channel remote window reopened"
+                        );
+                    });
+                }
                 *window_size -= writable as u32;
                 if *window_size > 0 {
                     self.notify.notify_one();
@@ -98,6 +126,20 @@ where
                 Poll::Ready(w)
             }
             Err(_) => {
+                if self.window_blocked_since.is_none() {
+                    self.window_blocked_since = Some(std::time::Instant::now());
+                    let id = self.id;
+                    let max_packet_size = self.max_packet_size;
+                    self.channel_span.in_scope(|| {
+                        tracing::info!(
+                            target: "russh::backpressure",
+                            event = "ssh.channel.window_exhausted",
+                            channel_id = ?id,
+                            max_packet_size,
+                            "channel send blocked waiting for remote window"
+                        );
+                    });
+                }
                 drop(window_size);
                 ready!(self.window_size_notication.poll_unpin(cx));
                 self.window_size_notication = WatchNotification::new(Arc::clone(&self.notify));
@@ -172,8 +214,42 @@ where
             let (msg, writable) = ready!(self.poll_mk_msg(cx, buf));
             self.activate(msg, writable.into())
         };
-        let r = ready!(send_fut.as_mut().poll_unpin(cx));
-        Poll::Ready(self.handle_write_result(r))
+        let poll_result = send_fut.as_mut().poll_unpin(cx);
+        match poll_result {
+            Poll::Pending => {
+                if self.mpsc_blocked_since.is_none() {
+                    self.mpsc_blocked_since = Some(std::time::Instant::now());
+                    let id = self.id;
+                    let capacity = self.sender.capacity();
+                    self.channel_span.in_scope(|| {
+                        tracing::info!(
+                            target: "russh::backpressure",
+                            event = "ssh.channel.mpsc_blocked",
+                            channel_id = ?id,
+                            capacity,
+                            "channel send blocked waiting for session loop to drain"
+                        );
+                    });
+                }
+                Poll::Pending
+            }
+            Poll::Ready(r) => {
+                if let Some(since) = self.mpsc_blocked_since.take() {
+                    let id = self.id;
+                    let blocked_us = since.elapsed().as_micros() as u64;
+                    self.channel_span.in_scope(|| {
+                        tracing::info!(
+                            target: "russh::backpressure",
+                            event = "ssh.channel.mpsc_unblocked",
+                            channel_id = ?id,
+                            blocked_us,
+                            "channel send permit acquired"
+                        );
+                    });
+                }
+                Poll::Ready(self.handle_write_result(r))
+            }
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {

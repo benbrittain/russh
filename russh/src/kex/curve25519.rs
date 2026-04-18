@@ -2,7 +2,7 @@ use byteorder::{BigEndian, ByteOrder};
 use curve25519_dalek::constants::ED25519_BASEPOINT_TABLE;
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use curve25519_dalek::scalar::Scalar;
-use log::debug;
+use tracing::debug;
 use sha2::Digest;
 use ssh_encoding::{Encode, Writer};
 

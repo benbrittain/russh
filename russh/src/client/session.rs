@@ -1,4 +1,4 @@
-use log::error;
+use tracing::error;
 use ssh_encoding::Encode;
 use tokio::sync::oneshot;
 
@@ -9,7 +9,7 @@ use crate::{map_err, msg, ChannelId, Disconnect, Pty, Sig};
 impl Session {
     fn channel_open_generic<F>(
         &mut self,
-        kind: &[u8],
+        channel_type: &'static str,
         write_suffix: F,
     ) -> Result<ChannelId, crate::Error>
     where
@@ -21,10 +21,11 @@ impl Session {
                     let sender_channel = enc.new_channel(
                         self.common.config.window_size,
                         self.common.config.maximum_packet_size,
+                        channel_type,
                     );
                     push_packet!(enc.write, {
                         msg::CHANNEL_OPEN.encode(&mut enc.write)?;
-                        kind.encode(&mut enc.write)?;
+                        channel_type.as_bytes().encode(&mut enc.write)?;
 
                         // sender channel id.
                         sender_channel.encode(&mut enc.write)?;
@@ -56,7 +57,7 @@ impl Session {
     }
 
     pub fn channel_open_session(&mut self) -> Result<ChannelId, crate::Error> {
-        self.channel_open_generic(b"session", |_| Ok(()))
+        self.channel_open_generic("session", |_| Ok(()))
     }
 
     pub fn channel_open_x11(
@@ -64,7 +65,7 @@ impl Session {
         originator_address: &str,
         originator_port: u32,
     ) -> Result<ChannelId, crate::Error> {
-        self.channel_open_generic(b"x11", |write| {
+        self.channel_open_generic("x11", |write| {
             map_err!(originator_address.encode(write))?;
             map_err!(originator_port.encode(write))?; // sender channel id.
             Ok(())
@@ -78,7 +79,7 @@ impl Session {
         originator_address: &str,
         originator_port: u32,
     ) -> Result<ChannelId, crate::Error> {
-        self.channel_open_generic(b"direct-tcpip", |write| {
+        self.channel_open_generic("direct-tcpip", |write| {
             host_to_connect.encode(write)?;
             port_to_connect.encode(write)?; // sender channel id.
             originator_address.encode(write)?;
@@ -91,7 +92,7 @@ impl Session {
         &mut self,
         socket_path: &str,
     ) -> Result<ChannelId, crate::Error> {
-        self.channel_open_generic(b"direct-streamlocal@openssh.com", |write| {
+        self.channel_open_generic("direct-streamlocal@openssh.com", |write| {
             socket_path.encode(write)?;
             "".encode(write)?; // reserved
             0u32.encode(write)?; // reserved

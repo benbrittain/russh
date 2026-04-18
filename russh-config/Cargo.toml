@@ -13,7 +13,7 @@ rust-version = "1.85"
 [dependencies]
 futures.workspace = true
 globset = "0.4"
-log.workspace = true
+tracing.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "macros", "process"] }
 whoami = "1.2"

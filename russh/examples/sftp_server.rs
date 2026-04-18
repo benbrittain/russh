@@ -3,11 +3,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{LevelFilter, error, info};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
 use russh_sftp::protocol::{File, FileAttributes, Handle, Name, Status, StatusCode, Version};
 use tokio::sync::Mutex;
+use tracing::{error, info};
 
 #[derive(Clone)]
 struct Server;
@@ -170,8 +170,11 @@ impl russh_sftp::server::Handler for SftpSession {
 
 #[tokio::main]
 async fn main() {
-    env_logger::builder()
-        .filter_level(LevelFilter::Debug)
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
         .init();
 
     let config = russh::server::Config {

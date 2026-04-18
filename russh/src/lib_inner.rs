@@ -3,7 +3,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::future::{Future, Pending};
 
 use futures::future::Either as EitherFuture;
-use log::{debug, warn};
+use tracing::warn;
 use parsing::ChannelOpenConfirmation;
 pub use russh_cryptovec::CryptoVec;
 use ssh_encoding::{Decode, Encode};
@@ -473,6 +473,9 @@ pub(crate) struct ChannelParams {
     pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
     pending_eof: bool,
     pending_close: bool,
+    /// Channel-type string ("session", "direct-tcpip", ...) captured at open
+    /// time so the confirmation handler can tag the `ssh.channel` span.
+    pub channel_type: &'static str,
 }
 
 impl ChannelParams {

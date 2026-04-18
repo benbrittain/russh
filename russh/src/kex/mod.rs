@@ -104,6 +104,14 @@ impl KexCause {
         }
     }
 
+    /// Short tag for the `ssh.kex.cause` span attribute.
+    pub fn span_tag(&self) -> &'static str {
+        match self {
+            Self::Initial => "initial",
+            Self::Rekey { .. } => "rekey",
+        }
+    }
+
     pub fn session_id(&self) -> Option<&CryptoVec> {
         match self {
             Self::Initial => None,
