@@ -750,15 +750,23 @@ impl Session {
             )?;
             self.common.bytes_sent += sent as u64;
 
-            if self.common.received_data {
+            // A successful write to the transport means the peer's TCP stack
+            // accepted our bytes, which over long windows requires the peer to
+            // be ACKing — so a client that is draining a long upload-pack
+            // response without sending anything on the reverse channel is
+            // still demonstrably alive. Without this, streaming a large
+            // response to a slow client gets killed with KeepaliveTimeout
+            // because `alive_timeouts` never resets.
+            let peer_is_alive = self.common.received_data || sent > 0;
+            if peer_is_alive {
                 // Reset the number of failed keepalive attempts. We don't
                 // bother detecting keepalive response messages specifically
                 // (OpenSSH_9.6p1 responds with REQUEST_FAILURE aka 82). Instead
                 // we assume that the client is still alive if we receive any
-                // data from it.
+                // data from it or if it is accepting our writes.
                 self.common.alive_timeouts = 0;
             }
-            if self.common.received_data || sent_keepalive {
+            if peer_is_alive || sent_keepalive {
                 if let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
                     keepalive_timer.as_mut().as_pin_mut(),
                     self.common.config.keepalive_interval,

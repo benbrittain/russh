@@ -1390,15 +1390,20 @@ impl Session {
                 }
             }
 
-            if self.common.received_data {
+            // See the matching comment in server/session.rs: if our writes
+            // are still being accepted by the transport, the peer is ACKing
+            // and is therefore alive, even when the reverse channel is idle
+            // (e.g. uploading a large blob over exec).
+            let peer_is_alive = self.common.received_data || sent > 0;
+            if peer_is_alive {
                 // Reset the number of failed keepalive attempts. We don't
                 // bother detecting keepalive response messages specifically
                 // (OpenSSH_9.6p1 responds with REQUEST_FAILURE aka 82). Instead
                 // we assume that the server is still alive if we receive any
-                // data from it.
+                // data from it or if it is accepting our writes.
                 self.common.alive_timeouts = 0;
             }
-            if self.common.received_data || sent_keepalive {
+            if peer_is_alive || sent_keepalive {
                 if let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
                     keepalive_timer.as_mut().as_pin_mut(),
                     self.common.config.keepalive_interval,
