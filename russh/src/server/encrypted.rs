@@ -21,7 +21,7 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 use cert::PublicKeyOrCertificate;
 use tracing::field::Empty;
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{debug, error, info, info_span, warn, Instrument};
 use msg;
 use signature::Verifier;
 use ssh_encoding::{Decode, Encode, Reader};
@@ -97,6 +97,23 @@ impl Session {
                 Ok(())
             }
             (EncryptedState::WaitingAuthRequest(_), Some((&msg::USERAUTH_REQUEST, mut r))) => {
+                let auth_req_span = match self.common.auth_span.as_ref() {
+                    Some(parent) => info_span!(
+                        parent: parent,
+                        "ssh.auth.request",
+                        otel.kind = "internal",
+                        role = "server",
+                        ssh.auth.method = Empty,
+                        ssh.auth.outcome = Empty,
+                    ),
+                    None => info_span!(
+                        "ssh.auth.request",
+                        otel.kind = "internal",
+                        role = "server",
+                        ssh.auth.method = Empty,
+                        ssh.auth.outcome = Empty,
+                    ),
+                };
                 enc.server_read_auth_request(
                     rejection_wait_until,
                     initial_none_rejection_wait_until,
@@ -105,6 +122,7 @@ impl Session {
                     &mut r,
                     &mut self.common.auth_user,
                 )
+                .instrument(auth_req_span)
                 .await?;
                 self.common.auth_attempts += 1;
                 if let EncryptedState::InitCompression = enc.state {
@@ -226,6 +244,7 @@ impl Encrypted {
         let user = map_err!(String::decode(r))?;
         let service_name = map_err!(String::decode(r))?;
         let method = map_err!(String::decode(r))?;
+        tracing::Span::current().record("ssh.auth.method", method.as_str());
         info!(
             event = "ssh.auth.attempt",
             user.name = %user,
@@ -657,10 +676,19 @@ impl Session {
         r: &mut R,
     ) -> Result<(), H::Error> {
         match msg {
-            msg::CHANNEL_OPEN => self
-                .server_handle_channel_open(handler, r)
-                .await
-                .map(|_| ()),
+            msg::CHANNEL_OPEN => {
+                let span = info_span!(
+                    parent: &self.common.session_span,
+                    "ssh.channel.open",
+                    otel.kind = "internal",
+                    role = "server",
+                    ssh.channel.type = Empty,
+                );
+                self.server_handle_channel_open(handler, r)
+                    .instrument(span)
+                    .await
+                    .map(|_| ())
+            }
             msg::CHANNEL_CLOSE => {
                 let channel_num = map_err!(ChannelId::decode(r))?;
                 if let Some(ref mut enc) = self.common.encrypted {
@@ -813,6 +841,16 @@ impl Session {
                 let channel_num = map_err!(ChannelId::decode(r))?;
                 let req_type = map_err!(String::decode(r))?;
                 let wants_reply = map_err!(u8::decode(r))?;
+                // Held for the duration of this arm; dropped on exit so the
+                // span records start/end around CHANNEL_REQUEST processing.
+                let _request_span = info_span!(
+                    parent: &self.common.session_span,
+                    "ssh.channel.request",
+                    otel.kind = "internal",
+                    role = "server",
+                    ssh.channel.id = ?channel_num,
+                    ssh.channel.request_type = %req_type,
+                );
                 // window-change and signal can burst (terminal resizes, Ctrl-C); keep them
                 // out of info so the lifecycle-level stream isn't drowned.
                 match req_type.as_str() {
@@ -1220,15 +1258,16 @@ impl Session {
         } else {
             unreachable!()
         };
+        let wire_channel_type = msg.typ.as_channel_open_type_str();
+        tracing::Span::current().record("ssh.channel.type", wire_channel_type);
         info!(
             event = "ssh.channel.opened",
             channel_id = ?sender_channel,
-            kind = msg.typ.as_channel_open_type_str(),
+            kind = wire_channel_type,
             window_size = msg.recipient_window_size,
             max_packet_size = msg.recipient_maximum_packet_size,
             "channel opened"
         );
-        let wire_channel_type = msg.typ.as_channel_open_type_str();
         let channel_params = ChannelParams {
             recipient_channel: msg.recipient_channel,
 

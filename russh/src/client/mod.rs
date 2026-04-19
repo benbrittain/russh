@@ -1076,6 +1076,7 @@ where
             close_reason: None,
             session_span: Span::none(),
             auth_span: None,
+            kex_span: None,
             peer_addr,
         },
         session_receiver,
