@@ -87,6 +87,9 @@ pub(crate) struct CommonSession<Config> {
     // Set when authentication begins, dropped when it finishes. Lets code in
     // the auth path record user/method/outcome on a dedicated `ssh.auth` span.
     pub auth_span: Option<Span>,
+    // Set on first KEXINIT, dropped on KexProgress::Done. Held across multiple
+    // packet callbacks so a single `ssh.kex` span covers the whole exchange.
+    pub kex_span: Option<Span>,
     // Peer socket address, when the caller provided one (via `connect` /
     // `run_on_socket`). `None` when a user-supplied stream gives no addr.
     pub peer_addr: Option<std::net::SocketAddr>,

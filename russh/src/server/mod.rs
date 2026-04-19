@@ -38,7 +38,8 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use client::GexParams;
 use futures::future::Future;
-use tracing::{error, info, warn};
+use tracing::field::Empty;
+use tracing::{error, info, info_span, warn, Instrument};
 use msg::{is_kex_msg, validate_client_msg_strict_kex};
 use russh_util::runtime::JoinHandle;
 use russh_util::time::Instant;
@@ -1083,6 +1084,7 @@ async fn read_ssh_id<R: AsyncRead + Unpin>(
         close_reason: None,
         session_span: tracing::Span::none(),
         auth_span: None,
+        kex_span: None,
         peer_addr: None,
     };
     Ok(session)
@@ -1119,8 +1121,26 @@ async fn reply<H: Handler + Send>(
 
     if is_kex_msg {
         if let SessionKexState::InProgress(kex) = session.kex.take() {
+            if session.common.kex_span.is_none() {
+                let rekey = session.common.encrypted.is_some();
+                session.common.kex_span = Some(info_span!(
+                    parent: &session.common.session_span,
+                    "ssh.kex",
+                    otel.kind = "internal",
+                    role = "server",
+                    ssh.kex.rekey = rekey,
+                    ssh.kex.algorithm = Empty,
+                ));
+            }
+            let kex_span = session
+                .common
+                .kex_span
+                .as_ref()
+                .expect("kex_span just set")
+                .clone();
             let progress = kex
                 .step(Some(pkt), &mut session.common.packet_writer, handler)
+                .instrument(kex_span)
                 .await?;
 
             match progress {
@@ -1131,6 +1151,9 @@ async fn reply<H: Handler + Send>(
                     }
                 }
                 KexProgress::Done { newkeys, .. } => {
+                    if let Some(kex_span) = session.common.kex_span.take() {
+                        kex_span.record("ssh.kex.algorithm", newkeys.names.kex.as_ref());
+                    }
                     session.common.strict_kex =
                         session.common.strict_kex || newkeys.names.strict_kex();
 
