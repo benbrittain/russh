@@ -17,10 +17,10 @@ use std::ops::Deref;
 use std::str::FromStr;
 
 use bytes::Bytes;
-use tracing::field::Empty;
-use tracing::{debug, error, info, info_span, warn};
 use ssh_encoding::{Decode, Encode, Reader};
 use ssh_key::Algorithm;
+use tracing::field::Empty;
+use tracing::{debug, error, info_span};
 
 use super::IncomingSshPacket;
 use crate::auth::AuthRequest;
@@ -54,30 +54,28 @@ impl Session {
             match enc.state {
                 EncryptedState::WaitingAuthServiceRequest {
                     ref mut accepted, ..
-                } => {
-                    match buf.split_first() {
-                        Some((&msg::SERVICE_ACCEPT, mut r)) => {
-                            if map_err!(Bytes::decode(&mut r))?.as_ref() == b"ssh-userauth" {
-                                *accepted = true;
-                                if let Some(ref meth) = self.common.auth_method {
-                                    let auth_request = AuthRequest::new(meth);
-                                    if enc.write_auth_request(&self.common.auth_user, meth)? {
-                                        enc.state = EncryptedState::WaitingAuthRequest(auth_request)
-                                    }
-                                } else {
-                                    debug!(event = "ssh.auth.no_method_configured");
+                } => match buf.split_first() {
+                    Some((&msg::SERVICE_ACCEPT, mut r)) => {
+                        if map_err!(Bytes::decode(&mut r))?.as_ref() == b"ssh-userauth" {
+                            *accepted = true;
+                            if let Some(ref meth) = self.common.auth_method {
+                                let auth_request = AuthRequest::new(meth);
+                                if enc.write_auth_request(&self.common.auth_user, meth)? {
+                                    enc.state = EncryptedState::WaitingAuthRequest(auth_request)
                                 }
+                            } else {
+                                debug!(event = "ssh.auth.no_method_configured");
                             }
                         }
-                        Some((&msg::EXT_INFO, mut r)) => {
-                            return self.handle_ext_info(&mut r).map_err(Into::into);
-                        }
-                        other => {
-                            debug!(event = "ssh.unexpected_message", message = ?other);
-                            return Err(crate::Error::Inconsistent.into());
-                        }
                     }
-                }
+                    Some((&msg::EXT_INFO, mut r)) => {
+                        return self.handle_ext_info(&mut r).map_err(Into::into);
+                    }
+                    other => {
+                        debug!(event = "ssh.unexpected_message", message = ?other);
+                        return Err(crate::Error::Inconsistent.into());
+                    }
+                },
                 EncryptedState::WaitingAuthRequest(ref mut auth_request) => {
                     match buf.split_first() {
                         Some((&msg::USERAUTH_SUCCESS, _)) => {
@@ -89,11 +87,6 @@ impl Session {
                                     .record("ssh.auth.user", self.common.auth_user.as_str())
                                     .record("ssh.auth.outcome", "success");
                             }
-                            info!(
-                                event = "ssh.auth.succeeded",
-                                user.name = %self.common.auth_user,
-                                "user authentication succeeded"
-                            );
                             self.sender
                                 .send(Reply::AuthSuccess)
                                 .map_err(|_| crate::Error::SendError)?;
@@ -112,12 +105,6 @@ impl Session {
                             let remaining_methods: MethodSet =
                                 (&map_err!(NameList::decode(&mut r))?).into();
                             let partial_success = map_err!(u8::decode(&mut r))? != 0;
-                            info!(
-                                event = "ssh.auth.rejected",
-                                ssh.auth.partial_success = partial_success,
-                                ssh.auth.remaining_methods = ?remaining_methods,
-                                "authentication attempt rejected by server"
-                            );
                             auth_request.methods = remaining_methods.clone();
 
                             let no_more_methods = auth_request.methods.is_empty();
@@ -312,10 +299,7 @@ impl Session {
 
     fn handle_ext_info(&mut self, r: &mut impl Reader) -> Result<(), Error> {
         let n_extensions = u32::decode(r)? as usize;
-        debug!(
-            event = "ssh.ext_info",
-            ssh.ext_info.count = n_extensions,
-        );
+        debug!(event = "ssh.ext_info", ssh.ext_info.count = n_extensions,);
         for _ in 0..n_extensions {
             let name = String::decode(r)?;
             if name == "server-sig-algs" {
@@ -359,14 +343,6 @@ impl Session {
             Some((&msg::CHANNEL_OPEN_CONFIRMATION, mut reader)) => {
                 let msg = map_err!(ChannelOpenConfirmation::decode(&mut reader))?;
                 let local_id = ChannelId(msg.recipient_channel);
-                info!(
-                    event = "ssh.channel.opened",
-                    channel_id = ?local_id,
-                    window_size = msg.initial_window_size,
-                    max_packet_size = msg.maximum_packet_size,
-                    "channel opened"
-                );
-
                 let channel_type = if let Some(ref mut enc) = self.common.encrypted {
                     if let Some(parameters) = enc.channels.get_mut(&local_id) {
                         parameters.confirm(&msg);
@@ -414,11 +390,6 @@ impl Session {
             }
             Some((&msg::CHANNEL_CLOSE, mut r)) => {
                 let channel_num = map_err!(ChannelId::decode(&mut r))?;
-                info!(
-                    event = "ssh.channel.closed",
-                    channel_id = ?channel_num,
-                    "channel closed"
-                );
                 if let Some(ref mut enc) = self.common.encrypted {
                     // The CHANNEL_CLOSE message must be sent to the server at this point or the session
                     // will not be released.
@@ -445,15 +416,8 @@ impl Session {
                 let channel_num = map_err!(ChannelId::decode(&mut r))?;
                 let reason_code = ChannelOpenFailure::from_u32(map_err!(u32::decode(&mut r))?)
                     .unwrap_or(ChannelOpenFailure::Unknown);
-                let descr = map_err!(String::decode(&mut r))?;
+                let description = map_err!(String::decode(&mut r))?;
                 let language = map_err!(String::decode(&mut r))?;
-                info!(
-                    event = "ssh.channel.open_failure",
-                    channel_id = ?channel_num,
-                    reason = ?reason_code,
-                    description = %descr,
-                    "channel open failed"
-                );
                 if let Some(ref mut enc) = self.common.encrypted {
                     enc.channels.remove(&channel_num);
                 }
@@ -465,7 +429,7 @@ impl Session {
                 let _ = self.sender.send(Reply::ChannelOpenFailure);
 
                 client
-                    .channel_open_failure(channel_num, reason_code, &descr, &language, self)
+                    .channel_open_failure(channel_num, reason_code, &description, &language, self)
                     .await
             }
             Some((&msg::CHANNEL_DATA, mut r)) => {
@@ -581,11 +545,6 @@ impl Session {
                                     });
                                 }
                             }
-                        } else {
-                            warn!(
-                                event = "ssh.keepalive.no_reply_flag",
-                                "keepalive received without want_reply set"
-                            );
                         }
                         Ok(())
                     }
@@ -602,12 +561,6 @@ impl Session {
                                 }
                             }
                         }
-                        info!(
-                            event = "ssh.channel.request_unknown",
-                            ssh.channel.id = ?channel_num,
-                            ssh.channel.request_type = %req,
-                            ssh.want_reply = wants_reply == 1,
-                        );
                         Ok(())
                     }
                 }
@@ -645,11 +598,6 @@ impl Session {
                         if wants_reply == 1 {
                             self.common.wants_reply = false;
                             push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS));
-                        } else {
-                            warn!(
-                                event = "ssh.keepalive.no_reply_flag",
-                                "keepalive received without want_reply set"
-                            );
                         }
                     } else if req == "hostkeys-00@openssh.com" {
                         let mut keys = vec![];
@@ -675,11 +623,6 @@ impl Session {
                         }
                         return client.openssh_ext_host_keys_announced(keys, self).await;
                     } else {
-                        warn!(
-                            event = "ssh.global_request.unhandled",
-                            ssh.global_request.name = %req,
-                            ssh.want_reply = wants_reply == 1,
-                        );
                         self.common.wants_reply = false;
                         push_packet!(enc.write, enc.write.push(msg::REQUEST_FAILURE))
                     }
@@ -883,12 +826,7 @@ impl Session {
                     Some(GlobalRequestResponse::Ping(return_channel)) => {
                         let _ = return_channel.send(());
                     }
-                    Some(GlobalRequestResponse::NoMoreSessions) => {
-                        warn!(
-                            event = "ssh.global_request.rejected",
-                            ssh.global_request.name = "no-more-sessions@openssh.com",
-                        );
-                    }
+                    Some(GlobalRequestResponse::NoMoreSessions) => {}
                     Some(GlobalRequestResponse::TcpIpForward(return_channel)) => {
                         let _ = return_channel.send(None);
                     }

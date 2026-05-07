@@ -2,7 +2,7 @@ use std::pin::Pin;
 
 use futures::task::*;
 use tracing::field::Empty;
-use tracing::{info, instrument, trace, Span};
+use tracing::{instrument, trace, Span};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::Error;
@@ -166,12 +166,6 @@ impl<R: AsyncRead + Unpin> SshRead<R> {
                             let span = Span::current();
                             span.record("peer.ssh_id", s);
                             span.record("preliminary_lines", preliminary_lines);
-                            info!(
-                                event = "ssh.version_exchange.completed",
-                                peer.ssh_id = s,
-                                preliminary_lines,
-                                "received peer SSH identification"
-                            );
                             return Ok(ssh_id.id());
                         }
                     }

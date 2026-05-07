@@ -52,12 +52,11 @@ pub struct ChannelTx<S> {
     window_size_notication: WatchNotification,
     max_packet_size: u32,
     ext: Option<u32>,
-    // When the remote window is exhausted, we stash the time at which we first
-    // observed the block so the unblock event can report how long the stall was.
-    window_blocked_since: Option<std::time::Instant>,
+    // Spans held open while writes are blocked on remote window capacity.
+    window_blocked_span: Option<(std::time::Instant, tracing::Span)>,
     // Same, but for tokio mpsc backpressure — the session task hasn't drained
     // the channel fast enough.
-    mpsc_blocked_since: Option<std::time::Instant>,
+    mpsc_blocked_span: Option<(std::time::Instant, tracing::Span)>,
     // Per-channel `ssh.channel` span, created on the session task so the
     // parent is the owning `ssh.session`. Writes run on the caller's task;
     // we re-enter the span when emitting backpressure events so they stay
@@ -88,8 +87,8 @@ where
             window_size_fut: None,
             max_packet_size,
             ext,
-            window_blocked_since: None,
-            mpsc_blocked_since: None,
+            window_blocked_span: None,
+            mpsc_blocked_span: None,
             channel_span,
         }
     }
@@ -106,18 +105,9 @@ where
 
         match NonZeroUsize::try_from(writable) {
             Ok(w) => {
-                if let Some(since) = self.window_blocked_since.take() {
-                    let id = self.id;
+                if let Some((since, span)) = self.window_blocked_span.take() {
                     let blocked_us = since.elapsed().as_micros() as u64;
-                    self.channel_span.in_scope(|| {
-                        tracing::info!(
-                            target: "russh::backpressure",
-                            event = "ssh.channel.window_unblocked",
-                            channel_id = ?id,
-                            blocked_us,
-                            "channel remote window reopened"
-                        );
-                    });
+                    span.record("blocked_us", blocked_us);
                 }
                 *window_size -= writable as u32;
                 if *window_size > 0 {
@@ -126,19 +116,19 @@ where
                 Poll::Ready(w)
             }
             Err(_) => {
-                if self.window_blocked_since.is_none() {
-                    self.window_blocked_since = Some(std::time::Instant::now());
+                if self.window_blocked_span.is_none() {
                     let id = self.id;
                     let max_packet_size = self.max_packet_size;
-                    self.channel_span.in_scope(|| {
-                        tracing::info!(
-                            target: "russh::backpressure",
-                            event = "ssh.channel.window_exhausted",
-                            channel_id = ?id,
-                            max_packet_size,
-                            "channel send blocked waiting for remote window"
-                        );
-                    });
+                    let span = tracing::info_span!(
+                        parent: &self.channel_span,
+                        "ssh.channel.window_blocked",
+                        otel.kind = "internal",
+                        ssh.channel.id = %u32::from(id),
+                        ssh.channel.blocked_by = "remote_window",
+                        ssh.channel.max_packet_size = max_packet_size,
+                        blocked_us = tracing::field::Empty,
+                    );
+                    self.window_blocked_span = Some((std::time::Instant::now(), span));
                 }
                 drop(window_size);
                 ready!(self.window_size_notication.poll_unpin(cx));
@@ -217,35 +207,26 @@ where
         let poll_result = send_fut.as_mut().poll_unpin(cx);
         match poll_result {
             Poll::Pending => {
-                if self.mpsc_blocked_since.is_none() {
-                    self.mpsc_blocked_since = Some(std::time::Instant::now());
+                if self.mpsc_blocked_span.is_none() {
                     let id = self.id;
                     let capacity = self.sender.capacity();
-                    self.channel_span.in_scope(|| {
-                        tracing::info!(
-                            target: "russh::backpressure",
-                            event = "ssh.channel.mpsc_blocked",
-                            channel_id = ?id,
-                            capacity,
-                            "channel send blocked waiting for session loop to drain"
-                        );
-                    });
+                    let span = tracing::info_span!(
+                        parent: &self.channel_span,
+                        "ssh.channel.mpsc_blocked",
+                        otel.kind = "internal",
+                        ssh.channel.id = %u32::from(id),
+                        ssh.channel.blocked_by = "session_mpsc",
+                        ssh.channel.mpsc.capacity = capacity,
+                        blocked_us = tracing::field::Empty,
+                    );
+                    self.mpsc_blocked_span = Some((std::time::Instant::now(), span));
                 }
                 Poll::Pending
             }
             Poll::Ready(r) => {
-                if let Some(since) = self.mpsc_blocked_since.take() {
-                    let id = self.id;
+                if let Some((since, span)) = self.mpsc_blocked_span.take() {
                     let blocked_us = since.elapsed().as_micros() as u64;
-                    self.channel_span.in_scope(|| {
-                        tracing::info!(
-                            target: "russh::backpressure",
-                            event = "ssh.channel.mpsc_unblocked",
-                            channel_id = ?id,
-                            blocked_us,
-                            "channel send permit acquired"
-                        );
-                    });
+                    span.record("blocked_us", blocked_us);
                 }
                 Poll::Ready(self.handle_write_result(r))
             }

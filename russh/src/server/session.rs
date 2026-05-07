@@ -5,7 +5,7 @@ use std::sync::Arc;
 use channels::WindowSizeRef;
 use kex::ServerKex;
 use tracing::field::Empty;
-use tracing::{info, instrument, Span};
+use tracing::{instrument, Span};
 use negotiation::parse_kex_algo_list;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -544,8 +544,6 @@ impl Session {
                 .record("client.address", addr.ip().to_string().as_str())
                 .record("client.port", addr.port());
         }
-        info!(event = "ssh.session.opened", "server session started");
-
         let result = self.run_inner(stream, &mut handler).await;
 
         if self.common.close_reason.is_none() && result.is_err() {
@@ -1402,12 +1400,6 @@ impl Session {
                 session_id: enc.session_id.clone(),
             },
         };
-        info!(
-            event = "ssh.kex.started",
-            ssh.kex.cause = cause.span_tag(),
-            role = "server",
-            "key exchange started"
-        );
         let mut kex = ServerKex::new(
             self.common.config.clone(),
             &self.common.remote_sshid,

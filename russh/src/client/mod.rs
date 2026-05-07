@@ -47,7 +47,7 @@ use futures::Future;
 use futures::task::{Context, Poll};
 use kex::ClientKex;
 use tracing::field::Empty;
-use tracing::{error, info, instrument, warn, Span};
+use tracing::{error, instrument, warn, Span};
 use russh_util::time::Instant;
 use ssh_encoding::Decode;
 use ssh_key::{Algorithm, Certificate, HashAlg, PrivateKey, PublicKey};
@@ -1200,7 +1200,6 @@ impl Session {
                 .record("server.address", addr.ip().to_string().as_str())
                 .record("server.port", addr.port());
         }
-        info!(event = "ssh.session.opened", "client session started");
         let (stream_read, mut stream_write) = stream.split();
         let result = self
             .run_inner(
@@ -1631,12 +1630,6 @@ impl Session {
                 session_id: enc.session_id.clone(),
             },
         };
-        info!(
-            event = "ssh.kex.started",
-            ssh.kex.cause = cause.span_tag(),
-            role = "client",
-            "key exchange started"
-        );
         let mut kex = ClientKex::new(
             self.common.config.clone(),
             &self.common.config.client_id,
@@ -1692,11 +1685,6 @@ async fn reply<H: Handler>(
 
     if pkt.buffer.first() == Some(&msg::KEXINIT) && session.kex == SessionKexState::Idle {
         // Not currently in a rekey but received KEXINIT
-        info!(
-            event = "ssh.kex.peer_initiated",
-            role = "client",
-            "peer initiated key exchange"
-        );
         session.begin_rekey()?;
         // Kex will consume the packet right away
     }

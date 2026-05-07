@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 
 use tracing::field::Empty;
-use tracing::{info, info_span};
+use tracing::info_span;
 use rand_core::Rng;
 use ssh_encoding::{Decode, Encode};
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
@@ -383,14 +383,6 @@ pub(crate) trait Select {
             )
             .record("ssh.hostkey.algorithm", names.key.to_string().as_str())
             .record("ssh.strict_kex", names.strict_kex);
-        info!(
-            event = "ssh.algorithm_negotiation.completed",
-            ssh.kex.algorithm = names.kex.as_ref(),
-            ssh.cipher = names.cipher.as_ref(),
-            ssh.hostkey.algorithm = %names.key,
-            ssh.strict_kex = names.strict_kex,
-            "algorithms negotiated"
-        );
         Ok(names)
     }
 }

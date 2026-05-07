@@ -39,7 +39,7 @@ use bytes::Bytes;
 use client::GexParams;
 use futures::future::Future;
 use tracing::field::Empty;
-use tracing::{error, info, info_span, warn, Instrument};
+use tracing::{error, info_span, warn, Instrument};
 use msg::{is_kex_msg, validate_client_msg_strict_kex};
 use russh_util::runtime::JoinHandle;
 use russh_util::time::Instant;
@@ -867,7 +867,6 @@ pub trait Server {
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
-                        info!(event = "ssh.server.shutdown", "shutdown requested");
                         return Ok(());
                     },
                     accept_result = socket.accept() => {
@@ -1108,11 +1107,6 @@ async fn reply<H: Handler + Send>(
 
     if pkt.buffer.first() == Some(&msg::KEXINIT) && session.kex == SessionKexState::Idle {
         // Not currently in a rekey but received KEXINIT
-        info!(
-            event = "ssh.kex.peer_initiated",
-            role = "server",
-            "peer initiated key exchange"
-        );
         session.begin_rekey()?;
         // Kex will consume the packet right away
     }

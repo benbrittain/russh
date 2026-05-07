@@ -19,9 +19,9 @@ use std::mem::replace;
 use std::num::Wrapping;
 
 use byteorder::{BigEndian, ByteOrder};
-use tracing::{debug, info, Span};
 use ssh_encoding::Encode;
 use tokio::sync::oneshot;
+use tracing::{debug, Span};
 
 use crate::cipher::OpeningKey;
 use crate::client::GexParams;
@@ -163,15 +163,6 @@ fn record_negotiated_algorithms(span: &Span, names: &negotiation::Names) {
 impl<C> CommonSession<C> {
     pub fn newkeys(&mut self, newkeys: NewKeys) {
         record_negotiated_algorithms(&self.session_span, &newkeys.names);
-        info!(
-            event = "ssh.kex.completed",
-            ssh.kex.cause = "rekey",
-            ssh.kex.algorithm = newkeys.names.kex.as_ref(),
-            ssh.cipher = newkeys.names.cipher.as_ref(),
-            ssh.mac.client_to_server = newkeys.names.client_mac.as_ref(),
-            ssh.mac.server_to_client = newkeys.names.server_mac.as_ref(),
-            "rekey completed"
-        );
         if let Some(ref mut enc) = self.encrypted {
             enc.exchange = Some(newkeys.exchange);
             enc.kex = newkeys.kex;
@@ -192,15 +183,6 @@ impl<C> CommonSession<C> {
 
     pub fn encrypted(&mut self, state: EncryptedState, newkeys: NewKeys) {
         record_negotiated_algorithms(&self.session_span, &newkeys.names);
-        info!(
-            event = "ssh.kex.completed",
-            ssh.kex.cause = "initial",
-            ssh.kex.algorithm = newkeys.names.kex.as_ref(),
-            ssh.cipher = newkeys.names.cipher.as_ref(),
-            ssh.mac.client_to_server = newkeys.names.client_mac.as_ref(),
-            ssh.mac.server_to_client = newkeys.names.server_mac.as_ref(),
-            "initial key exchange completed"
-        );
         let strict_kex = newkeys.names.strict_kex();
         self.encrypted = Some(Encrypted {
             exchange: Some(newkeys.exchange),
